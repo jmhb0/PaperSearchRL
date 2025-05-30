@@ -3,6 +3,8 @@ import os
 import warnings
 from typing import List, Dict, Optional
 import argparse
+import time
+import logging
 
 import faiss
 import torch
@@ -15,13 +17,21 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 def load_corpus(corpus_path: str):
+    start_time = time.time()
+    logger.info(f"Loading corpus from {corpus_path}...")
     corpus = datasets.load_dataset(
         'json', 
         data_files=corpus_path,
         split="train",
         num_proc=4
     )
+    elapsed = time.time() - start_time
+    logger.info(f"✓ Corpus loaded in {elapsed:.2f} seconds")
     return corpus
 
 def read_jsonl(file_path):
@@ -36,6 +46,8 @@ def load_docs(corpus, doc_idxs):
     return results
 
 def load_model(model_path: str, use_fp16: bool = False):
+    start_time = time.time()
+    logger.info(f"Loading model from {model_path}...")
     model_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
     model.eval()
@@ -43,6 +55,8 @@ def load_model(model_path: str, use_fp16: bool = False):
     if use_fp16: 
         model = model.half()
     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
+    elapsed = time.time() - start_time
+    logger.info(f"✓ Model loaded in {elapsed:.2f} seconds")
     return model, tokenizer
 
 def pooling(
@@ -63,6 +77,9 @@ def pooling(
 
 class Encoder:
     def __init__(self, model_name, model_path, pooling_method, max_length, use_fp16):
+        start_time = time.time()
+        logger.info(f"Initializing encoder with model: {model_name}")
+        
         self.model_name = model_name
         self.model_path = model_path
         self.pooling_method = pooling_method
@@ -71,6 +88,9 @@ class Encoder:
 
         self.model, self.tokenizer = load_model(model_path=model_path, use_fp16=use_fp16)
         self.model.eval()
+        
+        elapsed = time.time() - start_time
+        logger.info(f"✓ Encoder initialized in {elapsed:.2f} seconds")
 
     @torch.no_grad()
     def encode(self, query_list: List[str], is_query=True) -> np.ndarray:
@@ -145,14 +165,26 @@ class BaseRetriever:
 
 class BM25Retriever(BaseRetriever):
     def __init__(self, config):
+        start_time = time.time()
+        logger.info("Initializing BM25 retriever...")
+        
         super().__init__(config)
         from pyserini.search.lucene import LuceneSearcher
+        
+        index_start = time.time()
+        logger.info(f"Loading BM25 index from {self.index_path}...")
         self.searcher = LuceneSearcher(self.index_path)
+        index_elapsed = time.time() - index_start
+        logger.info(f"✓ BM25 index loaded in {index_elapsed:.2f} seconds")
+        
         self.contain_doc = self._check_contain_doc()
         if not self.contain_doc:
             self.corpus = load_corpus(self.corpus_path)
         self.max_process_num = 8
-    
+        
+        elapsed = time.time() - start_time
+        logger.info(f"✓ BM25 retriever initialized in {elapsed:.2f} seconds")
+
     def _check_contain_doc(self):
         return self.searcher.doc(0).raw() is not None
 
@@ -206,15 +238,32 @@ class BM25Retriever(BaseRetriever):
 
 class DenseRetriever(BaseRetriever):
     def __init__(self, config):
+        start_time = time.time()
+        logger.info("Initializing dense retriever...")
+        
         super().__init__(config)
+        
+        # Load FAISS index
+        index_start = time.time()
+        logger.info(f"Loading FAISS index from {self.index_path}...")
         self.index = faiss.read_index(self.index_path)
+        index_elapsed = time.time() - index_start
+        logger.info(f"✓ FAISS index loaded in {index_elapsed:.2f} seconds")
+        
         if config.faiss_gpu:
+            gpu_start = time.time()
+            logger.info("Moving FAISS index to GPU...")
             co = faiss.GpuMultipleClonerOptions()
             co.useFloat16 = True
             co.shard = True
             self.index = faiss.index_cpu_to_all_gpus(self.index, co=co)
+            gpu_elapsed = time.time() - gpu_start
+            logger.info(f"✓ FAISS index moved to GPU in {gpu_elapsed:.2f} seconds")
 
+        # Load corpus
         self.corpus = load_corpus(self.corpus_path)
+        
+        # Initialize encoder
         self.encoder = Encoder(
             model_name = self.retrieval_method,
             model_path = config.retrieval_model_path,
@@ -224,6 +273,9 @@ class DenseRetriever(BaseRetriever):
         )
         self.topk = config.retrieval_topk
         self.batch_size = config.retrieval_batch_size
+        
+        elapsed = time.time() - start_time
+        logger.info(f"✓ Dense retriever initialized in {elapsed:.2f} seconds")
 
     def _search(self, query: str, num: int = None, return_score: bool = False):
         if num is None:
@@ -359,6 +411,8 @@ def retrieve_endpoint(request: QueryRequest):
 
 
 if __name__ == "__main__":
+    total_start = time.time()
+    logger.info("Starting retrieval server initialization...")
     
     parser = argparse.ArgumentParser(description="Launch the local faiss retriever.")
     parser.add_argument("--index_path", type=str, default="/home/peterjin/mnt/index/wiki-18/e5_Flat.index", help="Corpus indexing file.")
@@ -372,6 +426,8 @@ if __name__ == "__main__":
     
     # 1) Build a config (could also parse from arguments).
     #    In real usage, you'd parse your CLI arguments or environment variables.
+    config_start = time.time()
+    logger.info("Building configuration...")
     config = Config(
         retrieval_method = args.retriever_name,  # or "dense"
         index_path=args.index_path,
@@ -384,9 +440,19 @@ if __name__ == "__main__":
         retrieval_use_fp16=True,
         retrieval_batch_size=512,
     )
+    config_elapsed = time.time() - config_start
+    logger.info(f"✓ Configuration built in {config_elapsed:.2f} seconds")
 
     # 2) Instantiate a global retriever so it is loaded once and reused.
+    retriever_start = time.time()
+    logger.info(f"Initializing {args.retriever_name} retriever...")
     retriever = get_retriever(config)
+    retriever_elapsed = time.time() - retriever_start
+    logger.info(f"✓ Retriever initialized in {retriever_elapsed:.2f} seconds")
+    
+    total_elapsed = time.time() - total_start
+    logger.info(f"🚀 Server initialization completed in {total_elapsed:.2f} seconds total")
     
     # 3) Launch the server. By default, it listens on http://127.0.0.1:8000
+    logger.info("Starting FastAPI server on http://0.0.0.0:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
