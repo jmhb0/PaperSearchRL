@@ -154,4 +154,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     retriever.url=$RETRIEVER_URL \
     retriever.topk=3 \
     2>&1 | tee ${EXPERIMENT_NAME}.log
+<<<<<<< HEAD
 
+=======
+>>>>>>> 9a67e03a46317a1461133d50887857720394ead2
