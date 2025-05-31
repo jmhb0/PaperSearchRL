@@ -8,7 +8,7 @@ ln -s /home/jovyan/shared/jmhb/paper-search-rl/data/  data
 # conda install -y -c conda-forge openjdk=21
 
 # GPU allocation: Reserve first 2 GPUs for retrieval, rest for training
-export TOTAL_GPUS=${TOTAL_GPUS:-4}  # Set total GPUs available 
+export TOTAL_GPUS=${TOTAL_GPUS:-8}  # Set total GPUs available 
 export RETRIEVAL_GPUS=2
 export TRAINING_GPU_COUNT=$((TOTAL_GPUS - RETRIEVAL_GPUS))
 
@@ -22,7 +22,7 @@ echo "  Training: GPUs $TRAINING_GPU_IDS (count: $TRAINING_GPU_COUNT)"
 
 ### start retrieval server with specific GPUs
 echo "Starting retrieval server on GPUs $RETRIEVAL_GPU_IDS..."
-CUDA_VISIBLE_DEVICES=$RETRIEVAL_GPU_IDS bash retrieval_launch.sh &
+CUDA_VISIBLE_DEVICES=$RETRIEVAL_GPU_IDS bash retrieval_launch_bm25.sh &
 SERVER_PID=$! 
 echo "Waiting for server to start..."
 while ! curl -s 'http://0.0.0.0:8000/retrieve' > /dev/null 2>&1; do
@@ -64,11 +64,11 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # export BASE_MODEL='meta-llama/Llama-3.1-8B-Instruct'
 # export EXPERIMENT_NAME=nq-search-r1-grpo-llama3.1-8b-it-em
 
-export BASE_MODEL='Qwen/Qwen2.5-3B'
-export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-em
+# export BASE_MODEL='Qwen/Qwen2.5-3B'
+# export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-em
 
 export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
-export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-it-em
+export EXPERIMENT_NAME=20250530_grpo_nq_qwenit_bm25
 # export EXPERIMENT_NAME=nq-1000-search-r1-grpo-qwen2.5-3b-it-em
 # export EXPERIMENT_NAME=nq-512-search-r1-grpo-qwen2.5-3b-it-em
 # export EXPERIMENT_NAME=nq-5000-search-r1-grpo-qwen2.5-3b-it-em
