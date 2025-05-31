@@ -1,6 +1,7 @@
 #! /bin/bash
 set -e 
 
+cd /home/jovyan/workspace/PaperSearchRL
 ln -s /home/jovyan/shared/jmhb/paper-search-rl/data/  data
 
 # in case the java version thing doesn't work out of the box
