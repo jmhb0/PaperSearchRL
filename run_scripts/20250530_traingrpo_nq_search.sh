@@ -1,6 +1,8 @@
 #! /bin/bash
 set -e 
 
+ln -s /home/jovyan/shared/jmhb/paper-search-rl/data/  data
+
 # in case the java version thing doesn't work out of the box
 # conda install -y -c conda-forge openjdk=21
 
