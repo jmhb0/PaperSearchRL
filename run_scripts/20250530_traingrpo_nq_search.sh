@@ -1,7 +1,44 @@
-# export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-# export CUDA_VISIBLE_DEVICES=0,1,2,3
-# export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
-export GPU_COUNT=1
+#! /bin/bash
+set -e 
+
+# in case the java version thing doesn't work out of the box
+# conda install -y -c conda-forge openjdk=21
+
+# GPU allocation: Reserve first 2 GPUs for retrieval, rest for training
+export TOTAL_GPUS=${TOTAL_GPUS:-8}  # Set total GPUs available (default 8)
+export RETRIEVAL_GPUS=2
+export TRAINING_GPU_COUNT=$((TOTAL_GPUS - RETRIEVAL_GPUS))
+
+# Set GPU assignments
+export RETRIEVAL_GPU_IDS="0,1"  # First 2 GPUs for retrieval
+export TRAINING_GPU_IDS=$(seq -s, $RETRIEVAL_GPUS $((TOTAL_GPUS-1)))  # Remaining GPUs for training
+
+echo "GPU allocation:"
+echo "  Retrieval server: GPUs $RETRIEVAL_GPU_IDS"
+echo "  Training: GPUs $TRAINING_GPU_IDS (count: $TRAINING_GPU_COUNT)"
+
+### start retrieval server with specific GPUs
+echo "Starting retrieval server on GPUs $RETRIEVAL_GPU_IDS..."
+CUDA_VISIBLE_DEVICES=$RETRIEVAL_GPU_IDS bash retrieval_launch_bm25.sh &
+SERVER_PID=$! 
+echo "Waiting for server to start..."
+while ! curl -s 'http://0.0.0.0:8000/retrieve' > /dev/null 2>&1; do
+    echo "Server is not ready yet... sleeping 15 seconds"
+    sleep 15
+done
+echo "Server is ready!"
+
+## finish preparing the searchr1 env
+source /opt/conda/etc/profile.d/conda.sh
+conda activate searchr1
+pip install -e .
+echo "installed searchr1 env"
+
+## training with remaining GPUs
+export GPU_COUNT=$TRAINING_GPU_COUNT
+export CUDA_VISIBLE_DEVICES=$TRAINING_GPU_IDS
+
+## training 
 export DATA_DIR='data/nq_search'
 # export DATA_DIR='data/nq_hotpotqa_train'
 # export DATA_DIR='data/nq_search_1000'
@@ -41,35 +78,37 @@ export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-it-em
 
 # set -x
 export VLLM_ATTENTION_BACKEND=XFORMERS # vllm + qwen2-7b with flash_attn has some issues
-
 # max_prompt_length = (config['training']['max_start_length'] + config['training']['max_response_length'] * (config['training']['max_turns'] - 1) + config['training']['max_obs_length'] * config['training']['max_turns'])
 
+# Adjust batch sizes based on available training GPUs
 if [ "$GPU_COUNT" -eq 1 ] || [ "$GPU_COUNT" -eq 2 ]; then
-  # Reduced settings for 2 GPUs to avoid OOM
   BATCH_SIZE=256          
   VAL_BATCH_SIZE=128      
   PPO_MINI_BATCH_SIZE=128 
   PPO_MICRO_BATCH_SIZE=32
-elif [ "$GPU_COUNT" -eq 4 ] || [ "$GPU_COUNT" -eq 8 ]; then
-  # original settings
+elif [ "$GPU_COUNT" -eq 4 ] || [ "$GPU_COUNT" -eq 6 ]; then  # Updated for 6 GPUs (8-2)
   BATCH_SIZE=512
   VAL_BATCH_SIZE=256
   PPO_MINI_BATCH_SIZE=256
   PPO_MICRO_BATCH_SIZE=64
-elif [ "$GPU_COUNT" -eq 6 ]; then
-  # adjusted for divisibility by 6 (510*5=2550 total trajectories)
-  BATCH_SIZE=510
-  VAL_BATCH_SIZE=255
-  PPO_MINI_BATCH_SIZE=1275   # (510 * n_agent) / 2 = (510*5)/2
+elif [ "$GPU_COUNT" -eq 8 ]; then
+  BATCH_SIZE=512
+  VAL_BATCH_SIZE=256
+  PPO_MINI_BATCH_SIZE=256
   PPO_MICRO_BATCH_SIZE=64
 else
-  echo "Error: GPU_COUNT must be 2, 4, 6, or 8 (got $GPU_COUNT)" >&2
-  exit 1
+  echo "Warning: Unexpected GPU_COUNT=$GPU_COUNT, using default settings"
+  BATCH_SIZE=512
+  VAL_BATCH_SIZE=256
+  PPO_MINI_BATCH_SIZE=256
+  PPO_MICRO_BATCH_SIZE=64
 fi
 
-
-
-
+echo "Training configuration for $GPU_COUNT GPUs:"
+echo "  BATCH_SIZE=$BATCH_SIZE"
+echo "  VAL_BATCH_SIZE=$VAL_BATCH_SIZE"
+echo "  PPO_MINI_BATCH_SIZE=$PPO_MINI_BATCH_SIZE"
+echo "  PPO_MICRO_BATCH_SIZE=$PPO_MICRO_BATCH_SIZE"
 
 # Clean up any existing Ray processes first
 echo "Cleaning up existing Ray processes..."
@@ -78,8 +117,8 @@ pkill -f ray 2>/dev/null || true
 pkill -f raylet 2>/dev/null || true
 sleep 3
 
-# Start Ray cluster
-echo "Starting Ray cluster..."
+# Start Ray cluster with only the training GPUs
+echo "Starting Ray cluster with $GPU_COUNT GPUs..."
 ray start --head --num-cpus=64 --num-gpus=$GPU_COUNT --object-store-memory=10000000000
 
 # Wait a moment for Ray to fully initialize
@@ -95,8 +134,6 @@ export RAY_object_spilling_threshold=0.8
 
 # Set RAY_ADDRESS to connect to the cluster we just started
 export RAY_ADDRESS="auto"
-
-
 
 
 

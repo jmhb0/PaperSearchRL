@@ -18,6 +18,7 @@ Preprocess the nq dataset to parquet format
 import re
 import os
 import datasets
+import ipdb
 
 from verl.utils.hdfs_io import copy, makedirs
 import argparse
@@ -44,6 +45,18 @@ if __name__ == '__main__':
     parser.add_argument('--local_dir', default='./data/nq_search')
     parser.add_argument('--hdfs_dir', default=None)
     parser.add_argument('--template_type', type=str, default='base')
+    parser.add_argument('--num_train_samples',
+                        type=int,
+                        default=None,
+                        help="Number of training samples to process")
+    parser.add_argument('--num_test_samples',
+                        type=int,
+                        default=None,
+                        help="Number of test samples to process")
+    parser.add_argument('--seed',
+                        type=int,
+                        default=0,
+                        help="Random seed for shuffling")
 
     args = parser.parse_args()
 
@@ -53,6 +66,14 @@ if __name__ == '__main__':
 
     train_dataset = dataset['train']
     test_dataset = dataset['test']
+
+    if args.num_train_samples is not None:
+        train_dataset = train_dataset.shuffle(seed=args.seed).select(
+            range(args.num_train_samples))
+
+    if args.num_test_samples is not None:
+        test_dataset = test_dataset.shuffle(seed=args.seed).select(
+            range(args.num_test_samples))
 
     # add a row to each data item that represents a unique id
     def make_map_fn(split):
@@ -86,8 +107,10 @@ if __name__ == '__main__':
 
         return process_fn
 
-    train_dataset = train_dataset.map(function=make_map_fn('train'), with_indices=True)
-    test_dataset = test_dataset.map(function=make_map_fn('test'), with_indices=True)
+    train_dataset = train_dataset.map(function=make_map_fn('train'),
+                                      with_indices=True)
+    test_dataset = test_dataset.map(function=make_map_fn('test'),
+                                    with_indices=True)
 
     local_dir = args.local_dir
     hdfs_dir = args.hdfs_dir
