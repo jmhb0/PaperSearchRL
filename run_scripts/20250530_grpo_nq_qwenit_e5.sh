@@ -90,11 +90,16 @@ if [ "$GPU_COUNT" -eq 1 ] || [ "$GPU_COUNT" -eq 2 ]; then
   VAL_BATCH_SIZE=128      
   PPO_MINI_BATCH_SIZE=128 
   PPO_MICRO_BATCH_SIZE=32
-elif [ "$GPU_COUNT" -eq 4 ] || [ "$GPU_COUNT" -eq 6 ]; then  # Updated for 6 GPUs (8-2)
+elif [ "$GPU_COUNT" -eq 4 ]; then
   BATCH_SIZE=512
   VAL_BATCH_SIZE=256
   PPO_MINI_BATCH_SIZE=256
   PPO_MICRO_BATCH_SIZE=64
+elif [ "$GPU_COUNT" -eq 6 ]; then  # Separate case for 6 GPUs
+  BATCH_SIZE=480  # 480 * 5 = 2400, which is divisible by 6 (2400/6 = 400)
+  VAL_BATCH_SIZE=240
+  PPO_MINI_BATCH_SIZE=240
+  PPO_MICRO_BATCH_SIZE=60
 elif [ "$GPU_COUNT" -eq 8 ]; then
   BATCH_SIZE=512
   VAL_BATCH_SIZE=256
