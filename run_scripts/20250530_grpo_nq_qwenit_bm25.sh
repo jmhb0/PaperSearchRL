@@ -8,8 +8,8 @@ ln -s /home/jovyan/shared/jmhb/paper-search-rl/data/  data
 # conda install -y -c conda-forge openjdk=21
 
 # GPU allocation: Reserve first 2 GPUs for retrieval, rest for training
-export TOTAL_GPUS=${TOTAL_GPUS:-6}  # Set total GPUs available 
-export RETRIEVAL_GPUS=2
+export TOTAL_GPUS=${TOTAL_GPUS:-4}  # Set total GPUs available 
+export RETRIEVAL_GPUS=0
 export TRAINING_GPU_COUNT=$((TOTAL_GPUS - RETRIEVAL_GPUS))
 
 # Set GPU assignments
