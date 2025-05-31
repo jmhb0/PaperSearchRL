@@ -5,7 +5,7 @@ set -e
 # conda install -y -c conda-forge openjdk=21
 
 # GPU allocation: Reserve first 2 GPUs for retrieval, rest for training
-export TOTAL_GPUS=${TOTAL_GPUS:-8}  # Set total GPUs available (default 8)
+export TOTAL_GPUS=${TOTAL_GPUS:-4}  # Set total GPUs available 
 export RETRIEVAL_GPUS=2
 export TRAINING_GPU_COUNT=$((TOTAL_GPUS - RETRIEVAL_GPUS))
 
@@ -19,7 +19,7 @@ echo "  Training: GPUs $TRAINING_GPU_IDS (count: $TRAINING_GPU_COUNT)"
 
 ### start retrieval server with specific GPUs
 echo "Starting retrieval server on GPUs $RETRIEVAL_GPU_IDS..."
-CUDA_VISIBLE_DEVICES=$RETRIEVAL_GPU_IDS bash retrieval_launch_bm25.sh &
+CUDA_VISIBLE_DEVICES=$RETRIEVAL_GPU_IDS bash retrieval_launch.sh &
 SERVER_PID=$! 
 echo "Waiting for server to start..."
 while ! curl -s 'http://0.0.0.0:8000/retrieve' > /dev/null 2>&1; do
