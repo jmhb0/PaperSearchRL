@@ -1,0 +1,521 @@
+"""
+Functions for calling LLMs through OpenRouter API.
+Mostly vibe-coded with Claude Sonnet 4. 
+"""
+import os
+import hashlib
+import json
+import base64
+from io import BytesIO
+import ipdb
+import atexit
+import asyncio
+from typing import List, Optional, Dict, Any, Union, Tuple
+import lmdb
+import httpx
+from PIL import Image
+from openai import OpenAI
+
+
+class LLMCache:
+    """LMDB-based cache for LLM responses."""
+    
+    def __init__(self, cache_dir: str = "./cache"):
+        """Initialize the cache with LMDB."""
+        os.makedirs(cache_dir, exist_ok=True)
+        self.cache_path = os.path.join(cache_dir, "llm_cache.lmdb")
+        self.env = lmdb.open(self.cache_path, map_size=1024*1024*1024)  # 1GB max
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - automatically close the cache."""
+        self.close()
+    
+    def _generate_key(self, text: str, images: List[Image.Image], model_name: str, max_tokens: int, temperature: float) -> str:
+        """Generate a unique cache key based on input parameters."""
+        # Create a hash of the text, model, and generation parameters
+        content = f"{text}|{model_name}|{max_tokens}|{temperature}"
+        
+        # Add image hashes if present
+        if images:
+            image_hashes = []
+            for img in images:
+                # Convert image to bytes and hash
+                img_bytes = BytesIO()
+                img.save(img_bytes, format='PNG')
+                img_hash = hashlib.md5(img_bytes.getvalue()).hexdigest()
+                image_hashes.append(img_hash)
+            content += "|" + "|".join(image_hashes)
+        
+        return hashlib.sha256(content.encode()).hexdigest()
+    
+    def get(self, text: str, images: List[Image.Image], model_name: str, max_tokens: int, temperature: float) -> Optional[Tuple[str, float]]:
+        """Retrieve cached response and cost if it exists."""
+        key = self._generate_key(text, images, model_name, max_tokens, temperature)
+        
+        with self.env.begin() as txn:
+            cached_value = txn.get(key.encode())
+            if cached_value:
+                print("✓", end="", flush=True)  # Cache hit indicator
+                try:
+                    # Try to parse as JSON (new format with cost)
+                    cached_data = json.loads(cached_value.decode())
+                    if isinstance(cached_data, dict) and "response" in cached_data:
+                        return cached_data["response"], cached_data.get("cost", 0.0)
+                    else:
+                        # Fallback for old format (just response text)
+                        return cached_data, 0.0
+                except json.JSONDecodeError:
+                    # Fallback for old format (just response text)
+                    return cached_value.decode(), 0.0
+        return None
+    
+    def set(self, text: str, images: List[Image.Image], model_name: str, max_tokens: int, temperature: float, response: str, cost: float = 0.0):
+        """Cache the response and cost."""
+        key = self._generate_key(text, images, model_name, max_tokens, temperature)
+        
+        # Store as JSON with both response and cost
+        cache_data = {
+            "response": response,
+            "cost": cost
+        }
+        
+        with self.env.begin(write=True) as txn:
+            txn.put(key.encode(), json.dumps(cache_data).encode())
+    
+    def close(self):
+        """Close the LMDB environment."""
+        self.env.close()
+
+
+# Global cache instance
+_cache = LLMCache()
+
+# Register cleanup function to run when script exits
+atexit.register(_cache.close)
+
+
+def _encode_image_to_base64(image: Image.Image) -> str:
+    """Convert PIL Image to base64 string."""
+    buffered = BytesIO()
+    # Convert to RGB if necessary (for JPEG compatibility)
+    if image.mode in ('RGBA', 'LA', 'P'):
+        image = image.convert('RGB')
+    image.save(buffered, format="JPEG", quality=85)
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return f"data:image/jpeg;base64,{img_str}"
+
+
+def call_llm(
+    text: str, 
+    images: Optional[List[Image.Image]] = None, 
+    model_name: str = "openai/gpt-4o-mini",
+    provider: str = "openrouter",
+    use_cache: bool = True,
+    max_tokens: int = 1000,
+    temperature: float = 0.7,
+    include_cost: bool = False
+) -> Union[str, Tuple[str, float]]:
+    """
+    Call an LLM through OpenRouter API with optional image inputs and caching.
+    
+    Args:
+        text: The text prompt to send to the LLM
+        images: Optional list of PIL Images to include in the request
+        model_name: The model to use (default: openai/gpt-4o-mini)
+        provider: The provider to use (currently only supports openrouter)
+        use_cache: Whether to use caching (default: True)
+        max_tokens: Maximum tokens in response
+        temperature: Sampling temperature
+        include_cost: Whether to include cost information in response (default: False)
+        
+    Returns:
+        If include_cost is False: The LLM's response as a string
+        If include_cost is True: Tuple of (response_text, cost_in_usd)
+        
+    Raises:
+        ValueError: If provider is not supported or API key is missing
+        Exception: For API call failures
+    """
+    if provider != "openrouter":
+        raise ValueError("Currently only 'openrouter' provider is supported")
+    
+    # Get API key from environment
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY environment variable is required")
+    
+    # Normalize images input
+    if images is None:
+        images = []
+    
+    # Check cache first
+    if use_cache:
+        cached_result = _cache.get(text, images, model_name, max_tokens, temperature)
+        if cached_result:
+            cached_response, cached_cost = cached_result
+            if include_cost:
+                return cached_response, cached_cost
+            else:
+                return cached_response
+
+    # If we reach here, it's either a cache miss or cache is disabled
+    print("✗", end="", flush=True)  # Cache miss indicator
+    
+    # Initialize OpenAI client with OpenRouter endpoint
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+        timeout=30.0,
+        max_retries=2,
+        http_client=httpx.Client(verify=False)  # Disable SSL verification to fix certificate issues
+    )
+    
+    # Prepare the message content
+    message_content = [{"type": "text", "text": text}]
+    
+    # Add images if provided
+    for image in images:
+        image_b64 = _encode_image_to_base64(image)
+        message_content.append({
+            "type": "image_url",
+            "image_url": {"url": image_b64}
+        })
+    
+    # Prepare request parameters
+    request_params = {
+        "model": model_name,
+        "messages": [{
+            "role": "user",
+            "content": message_content
+        }],
+        "max_tokens": max_tokens,
+        "temperature": temperature
+    }
+    
+    try:
+        if include_cost:
+            # Make direct HTTP request when cost tracking is needed
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/jmhb/PaperSearch-rl",
+                "X-Title": "PaperSearch-RL"
+            }
+            
+            # Add usage parameter for cost tracking
+            request_params["usage"] = {"include": True}
+            
+            with httpx.Client(verify=False, timeout=30.0) as http_client:
+                http_response = http_client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=request_params
+                )
+                
+                if http_response.status_code != 200:
+                    raise Exception(f"HTTP {http_response.status_code}: {http_response.text}")
+                
+                response_data = http_response.json()
+                response_text = response_data["choices"][0]["message"]["content"]
+                cost = response_data.get("usage", {}).get("cost", 0.0)
+                
+                # Cache the response with cost
+                if use_cache and response_text:
+                    _cache.set(text, images, model_name, max_tokens, temperature, response_text, cost)
+                
+                return response_text, cost
+        else:
+            # Use OpenAI client for regular requests (without cost tracking)
+            response = client.chat.completions.create(**request_params)
+            response_text = response.choices[0].message.content
+            
+            # Cache the response with cost (0.0 for non-cost requests)
+            if use_cache and response_text:
+                _cache.set(text, images, model_name, max_tokens, temperature, response_text, 0.0)
+            
+            return response_text, 0.0
+        
+    except Exception as e:
+        raise Exception(f"API call failed: {str(e)}")
+
+
+def call_llm_batch(
+    prompts: List[str],
+    images_list: Optional[List[List[Image.Image]]] = None,
+    model_name: str = "openai/gpt-4o-mini",
+    provider: str = "openrouter",
+    use_cache: bool = True,
+    max_tokens: int = 1000,
+    temperature: float = 0.7,
+    max_concurrent: int = 50,
+    include_cost: bool = False
+) -> Union[List[str], Tuple[List[str], List[float]]]:
+    """
+    Call LLM with multiple prompts concurrently using the existing call_llm function.
+    
+    Args:
+        prompts: List of text prompts to send to the LLM
+        images_list: Optional list of image lists (one per prompt)
+        model_name: The model to use (default: openai/gpt-4o-mini)
+        provider: The provider to use (currently only supports openrouter)
+        use_cache: Whether to use caching (default: True)
+        max_tokens: Maximum tokens in response
+        temperature: Sampling temperature
+        max_concurrent: Maximum number of concurrent requests (default: 50)
+        include_cost: Whether to include cost information in response (default: False)
+        
+    Returns:
+        If include_cost is False: List of LLM responses as strings, in the same order as input prompts
+        If include_cost is True: Tuple of (responses_list, costs_list) where costs are in USD
+        
+    Raises:
+        ValueError: If inputs are invalid
+        Exception: For API call failures
+    """
+    if not prompts:
+        if include_cost:
+            return [], []
+        return []
+    
+    # Validate and normalize inputs
+    if images_list is None:
+        images_list = [[] for _ in prompts]
+    elif len(images_list) != len(prompts):
+        raise ValueError("images_list must have the same length as prompts")
+    
+    async def _batch_process():
+        # Create semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def _call_single(prompt: str, images: List[Image.Image]) -> Union[str, Tuple[str, float]]:
+            """Async wrapper around the sync call_llm function."""
+            async with semaphore:  # Limit concurrent requests
+                try:
+                    # Run the sync call_llm in a thread pool
+                    result = await asyncio.to_thread(
+                        call_llm,
+                        text=prompt,
+                        images=images,
+                        model_name=model_name,
+                        provider=provider,
+                        use_cache=use_cache,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        include_cost=include_cost
+                    )
+                    return result
+                except Exception as e:
+                    raise Exception(f"API call failed for prompt '{prompt[:50]}...': {str(e)}")
+        
+        # Create tasks for all prompts
+        tasks = [
+            _call_single(prompt, images)
+            for prompt, images in zip(prompts, images_list)
+        ]
+        
+        # Execute all tasks concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results and handle exceptions
+        processed_results = []
+        processed_costs = []
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                error_msg = f"Error for prompt {i}: {str(result)}"
+                print(f"⚠️  {error_msg}")
+                processed_results.append(f"[ERROR: {str(result)}]")
+                if include_cost:
+                    processed_costs.append(0.0)
+            else:
+                if include_cost:
+                    response_text, cost = result
+                    processed_results.append(response_text)
+                    processed_costs.append(cost)
+                else:
+                    processed_results.append(result)
+        
+        if include_cost:
+            return processed_results, processed_costs
+        return processed_results
+    
+    # Run the async batch process
+    try:
+        return asyncio.run(_batch_process())
+    except Exception as e:
+        raise Exception(f"Batch processing failed: {str(e)}")
+
+
+def list_available_models() -> List[Dict[str, Any]]:
+    """
+    Get list of available models from OpenRouter.
+    
+    Returns:
+        List of model dictionaries with model information
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY environment variable is required")
+    
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1"
+    )
+    
+    try:
+        response = client.models.list()
+        return [model.dict() for model in response.data]
+    except Exception as e:
+        raise Exception(f"Failed to fetch models: {str(e)}")
+
+
+def test_llm_calls():
+    """Test function to call LLM with different models."""
+    prompt = "what does Steve Irwin say?"
+    
+    print("Testing LLM API calls...")
+    print("=" * 50)
+    
+    # Test with GPT-4o-mini
+    try:
+        print(f"\n🤖 Testing with openai/gpt-4o-mini:")
+        print(f"Prompt: {prompt}")
+        response1 = call_llm(prompt, model_name="openai/gpt-4o-mini", use_cache=False)
+        print(f"Response: {response1}")
+    except Exception as e:
+        print(f"❌ Error with gpt-4o-mini: {e}")
+    
+    print("\n" + "-" * 50)
+    
+    # Test with Qwen
+    try:
+        print(f"\n🤖 Testing with qwen/qwen-2.5-72b-instruct:")
+        print(f"Prompt: {prompt}")
+        response2 = call_llm(prompt, model_name="qwen/qwen-2.5-72b-instruct")
+        print(f"Response: {response2}")
+    except Exception as e:
+        print(f"❌ Error with qwen: {e}")
+    
+    print("\n" + "=" * 50)
+    print("Testing complete!")
+
+
+def test_batch_llm_calls():
+    """Test function for batch LLM calls."""
+    prompts = [
+        "What is the capital of France?",
+        "Explain quantum computing in one sentence.",
+        "What does a cat say?",
+        "Name three programming languages.",
+        "What is 2 + 2?"
+    ]
+    
+    print("Testing Batch LLM API calls...")
+    print("=" * 50)
+    print(f"Processing {len(prompts)} prompts concurrently...")
+    
+    try:
+        import time
+        start_time = time.time()
+        
+        responses = call_llm_batch(
+            prompts=prompts,
+            model_name="openai/gpt-4o-mini",
+            max_concurrent=3  # Limit to 3 concurrent requests
+        )
+        
+        end_time = time.time()
+        
+        print(f"\n✅ Batch completed in {end_time - start_time:.2f} seconds")
+        print("\nResults:")
+        print("-" * 50)
+        
+        for i, (prompt, response) in enumerate(zip(prompts, responses)):
+            print(f"\n{i+1}. Prompt: {prompt}")
+            print(f"   Response: {response}")
+        
+    except Exception as e:
+        print(f"❌ Batch test failed: {e}")
+
+
+def test_cost_tracking():
+    """Test function to demonstrate cost tracking functionality."""
+    print("Testing Cost Tracking...")
+    print("=" * 50)
+    
+    # Test single call with cost tracking
+    prompt = "What is the capital of France?"
+    
+    try:
+        print(f"\n🤖 Testing single call with cost tracking:")
+        print(f"Prompt: {prompt}")
+        response, cost = call_llm(prompt, model_name="openai/gpt-4o-mini", include_cost=True, use_cache=False)
+        print(f"Response: {response}")
+        print(f"💰 Cost: ${cost:.8f} USD")
+    except Exception as e:
+        print(f"❌ Error with single call: {e}")
+    
+    print("\n" + "-" * 50)
+    
+    # Test batch calls with cost tracking
+    prompts = [
+        "What is 2 + 2?",
+        "Name a color.",
+        "What does a dog say?"
+    ]
+    
+    try:
+        print(f"\n🤖 Testing batch calls with cost tracking:")
+        print(f"Prompts: {prompts}")
+        
+        import time
+        start_time = time.time()
+        
+        responses, costs = call_llm_batch(
+            prompts=prompts,
+            model_name="openai/gpt-4o-mini",
+            include_cost=True,
+            use_cache=False,
+            max_concurrent=3
+        )
+        
+        end_time = time.time()
+        
+        print(f"\n✅ Batch completed in {end_time - start_time:.2f} seconds")
+        print("\nResults with costs:")
+        print("-" * 50)
+        
+        total_cost = sum(costs)
+        for i, (prompt, response, cost) in enumerate(zip(prompts, responses, costs)):
+            print(f"\n{i+1}. Prompt: {prompt}")
+            print(f"   Response: {response}")
+            print(f"   💰 Cost: ${cost:.8f} USD")
+        
+        print(f"\n💰 Total Cost: ${total_cost:.8f} USD")
+        
+    except Exception as e:
+        print(f"❌ Batch test failed: {e}")
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    test_llm_calls()
+    print("\n" + "=" * 70)
+    test_batch_llm_calls()
+    print("\n" + "=" * 70)
+    test_cost_tracking()
+
+response, cost = call_llm("What is the capital of France?", include_cost=True)
+print(f"Response: {response}")
+print(f"Cost: ${cost:.8f} USD")
+
+responses, costs = call_llm_batch(
+    prompts=["What is 2+2?", "Name a color."], 
+    include_cost=True
+)
+total_cost = sum(costs)
+print(f"Total cost: ${total_cost:.8f} USD")

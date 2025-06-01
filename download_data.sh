@@ -1,9 +1,14 @@
 # download_data.sh
+set -e
+source /pasteur/u/jmhb/miniconda3/etc/profile.d/conda.sh
+conda activate retriever
+
 save_path=data/
 python scripts/download.py --save_path $save_path
 cat $save_path/part_* > $save_path/e5_Flat.index
 gzip -d $save_path/wiki-18.jsonl.gz
 # (2) Process the NQ dataset.
+
 python scripts/data_process/nq_search.py
 
 

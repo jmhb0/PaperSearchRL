@@ -1,3 +1,5 @@
+results/
+cache/
 **/*.pt
 **/checkpoints
 **/wget-log
