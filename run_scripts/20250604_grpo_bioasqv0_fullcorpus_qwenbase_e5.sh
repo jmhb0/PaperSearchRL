@@ -9,8 +9,8 @@ ln -s /home/jovyan/shared/jmhb/paper-search-rl/data/  data
 export TOTAL_GPUS=${TOTAL_GPUS:-8}  # Set total GPUs available 
 export RETRIEVAL_GPUS=2
 
-export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
-export EXPERIMENT_NAME=20250604_grpo_bioasqv0_fullcorpus_qwenit_e5
+export BASE_MODEL='Qwen/Qwen2.5-7B'
+export EXPERIMENT_NAME=20250604_grpo_bioasqv0_fullcorpus_qwenbase_e5
 SAVE_FREQ=50
 TEST_FREQ=50
 
