@@ -1,7 +1,17 @@
 """
 python data_gen/inference_qwen_local.py
 BioASQ Local Inference Script with vLLM
-Loads BioASQ dataset, filters for factoid questions, and runs local LLM inference using vLLM.
+
+Main functionality:
+- Loads BioASQ or custom datasets from Hugging Face
+- Filters for factoid questions (if applicable)
+- Runs local LLM inference using vLLM with multiple Qwen models
+- Evaluates predictions using LLM judge (API or local)
+- Computes exact match scores when golden_answers are available
+- Supports two dataset options:
+  * jmhb/BioASQ-taskb (default)
+  * jmhb/bioasq_trainv0_n1609
+- Default processes 50 questions with configurable judge backend
 """
 import sys
 import os
@@ -10,7 +20,7 @@ import ipdb
 import re
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import torch
 from api import call_llm_batch
 
@@ -163,20 +173,53 @@ def run_vllm_inference(model_name: str,
     return responses
 
 
-def load_and_filter_data(num_questions: int = 100) -> pd.DataFrame:
+def compute_exact_match(predicted_answer: str,
+                        golden_answers: List[str]) -> bool:
+    """
+    Compute exact match between predicted answer and golden answers.
+    
+    Args:
+        predicted_answer: The predicted answer string
+        golden_answers: List of golden answer strings
+        
+    Returns:
+        True if any golden answer is a case-insensitive substring of the predicted answer
+    """
+    if predicted_answer == "ERROR" or not isinstance(predicted_answer, str):
+        return False
+
+    if not isinstance(golden_answers, list):
+        return False
+
+    # Convert predicted answer to lowercase for case-insensitive comparison
+    predicted_lower = predicted_answer.lower()
+
+    # Check if any golden answer is a substring of the predicted answer
+    for golden_answer in golden_answers:
+        if isinstance(golden_answer,
+                      str) and golden_answer.lower() in predicted_lower:
+            return True
+
+    return False
+
+
+def load_and_filter_data(
+        num_questions: int = 50,
+        dataset_name: str = "jmhb/BioASQ-taskb") -> pd.DataFrame:
     """
     Load BioASQ dataset and filter for factoid questions.
     
     Args:
         num_questions: Number of questions to process
+        dataset_name: Name of the Hugging Face dataset to load
         
     Returns:
         DataFrame with filtered questions
     """
-    print("Loading BioASQ dataset from Hugging Face...")
+    print(f"Loading {dataset_name} dataset from Hugging Face...")
 
     # Load the dataset
-    dataset = load_dataset("jmhb/BioASQ-taskb")
+    dataset = load_dataset(dataset_name)
 
     # Convert to pandas DataFrame for easier manipulation
     df = pd.DataFrame(dataset['train'])
@@ -184,9 +227,14 @@ def load_and_filter_data(num_questions: int = 100) -> pd.DataFrame:
     print(f"Original dataset size: {len(df)}")
     print(f"Dataset columns: {df.columns.tolist()}")
 
-    # Filter for factoid questions
-    factoid_df = df[df['type'] == 'factoid'].copy()
-    print(f"Factoid questions: {len(factoid_df)}")
+    # Filter for factoid questions if type column exists
+    if 'type' in df.columns:
+        factoid_df = df[df['type'] == 'factoid'].copy()
+        print(f"Factoid questions: {len(factoid_df)}")
+    else:
+        factoid_df = df.copy()
+        print(
+            f"No 'type' column found, using all questions: {len(factoid_df)}")
 
     # Shuffle the DataFrame with random seed 0
     factoid_df = factoid_df.sample(frac=1,
@@ -194,23 +242,29 @@ def load_and_filter_data(num_questions: int = 100) -> pd.DataFrame:
 
     # Filter for first num_questions questions
     factoid_df = factoid_df.head(num_questions).copy()
-    print(f"Using first {num_questions} factoid questions: {len(factoid_df)}")
+    print(f"Using first {num_questions} questions: {len(factoid_df)}")
 
-    # Create a new DataFrame with just question and answer columns
-    inference_df = factoid_df[['question', 'answer']].copy()
+    # Determine which columns to keep
+    columns_to_keep = ['question', 'answer']
+    if 'golden_answers' in factoid_df.columns:
+        columns_to_keep.append('golden_answers')
+        print(
+            "Found 'golden_answers' column - will compute exact match scores")
+
+    # Create a new DataFrame with the selected columns
+    inference_df = factoid_df[columns_to_keep].copy()
 
     return inference_df
 
 
-def run_judge_evaluation(
-        inference_df: pd.DataFrame,
-        judge_model: str = 'Qwen/Qwen2.5-7B-Instruct') -> pd.DataFrame:
+def run_judge_evaluation_flexible(inference_df: pd.DataFrame,
+                                  judge_inference_fn) -> pd.DataFrame:
     """
-    Run LLM judge evaluation for model predictions.
+    Run LLM judge evaluation for model predictions using a flexible inference function.
     
     Args:
         inference_df: DataFrame with predictions
-        judge_model: Model to use for judging
+        judge_inference_fn: Function that takes a list of prompts and returns responses
         
     Returns:
         DataFrame with judge scores added
@@ -257,12 +311,8 @@ def run_judge_evaluation(
 
             try:
                 if len(valid_prompts) > 0:
-                    judge_responses = run_vllm_inference(
-                        model_name=judge_model,
-                        prompts=valid_prompts,
-                        max_tokens=200,
-                        temperature=0.0  # Deterministic judging
-                    )
+                    # Use the flexible inference function
+                    judge_responses = judge_inference_fn(valid_prompts)
 
                     # Parse scores from judge responses
                     scores = [
@@ -314,78 +364,98 @@ def run_judge_evaluation(
     return inference_df
 
 
-def main(num_questions: int = 100, judge_backend: str = 'api'):
+def main(num_questions: int = 50,
+         judge_backend: str = 'api',
+         dataset_name: str = "jmhb/BioASQ-taskb"):
     """
     Main function to run BioASQ inference with local vLLM models.
     
     Args:
-        num_questions: Number of questions to process (default: 100)
+        num_questions: Number of questions to process (default: 50)
         judge_backend: Backend to use for judge evaluation ('api' or 'local')
+        dataset_name: Name of the Hugging Face dataset to load. Options:
+                     - "jmhb/BioASQ-taskb" (default)
+                     - "jmhb/bioasq_trainv0_n1609"
     """
     # Load and filter data
-    inference_df = load_and_filter_data(num_questions)
+    inference_df = load_and_filter_data(num_questions, dataset_name)
+
+    # Check if we have golden_answers column for exact match computation
+    has_golden_answers = 'golden_answers' in inference_df.columns
 
     # List of Qwen models to test
-    model_names = [
-        'Qwen/Qwen2.5-3B-Instruct',
-        # 'Qwen/Qwen2.5-3B',
-        # 'Qwen/Qwen2.5-7B-Instruct',
-        # 'Qwen/Qwen2.5-7B'
-    ]
+    model_name = 'Qwen/Qwen2.5-3B-Instruct'
+    # 'Qwen/Qwen2.5-3B',
+    # 'Qwen/Qwen2.5-7B-Instruct',
+    # 'Qwen/Qwen2.5-7B'
 
     # Loop over model names
-    for model_name in model_names:
-        print(f"\nRunning inference with model: {model_name}")
+    print(f"\nRunning inference with model: {model_name}")
 
-        # Construct questions using the template
-        questions = []
-        for question in inference_df['question']:
-            questions.append(
-                QUESTION_TEMPLATE_FACTOID.format(question=question))
+    # Construct questions using the template
+    questions = []
+    for question in inference_df['question']:
+        questions.append(QUESTION_TEMPLATE_FACTOID.format(question=question))
 
-        print(f"Running vLLM inference on {len(questions)} questions...")
+    print(f"Running vLLM inference on {len(questions)} questions...")
 
-        try:
-            # Run vLLM inference
-            responses = run_vllm_inference(model_name=model_name,
-                                           prompts=questions,
-                                           max_tokens=500,
-                                           temperature=0.1)
+    try:
+        # Run vLLM inference
+        responses = run_vllm_inference(model_name=model_name,
+                                       prompts=questions,
+                                       max_tokens=500,
+                                       temperature=0.1)
 
-            # Verify we got the same number of responses
-            assert len(responses) == len(
-                inference_df
-            ), f"Expected {len(inference_df)} responses, got {len(responses)}"
+        # Verify we got the same number of responses
+        assert len(responses) == len(
+            inference_df
+        ), f"Expected {len(inference_df)} responses, got {len(responses)}"
 
-            # Create column names
-            model_name_clean = model_name.replace('/', '_').replace(
-                '-', '_').replace('.', '_')
-            cot_column_name = f"cot_{model_name_clean}"
-            pred_column_name = f"pred_{model_name_clean}"
+        # Create column names
+        model_name_clean = model_name.replace('/', '_').replace('-',
+                                                                '_').replace(
+                                                                    '.', '_')
+        cot_column_name = f"cot_{model_name_clean}"
+        pred_column_name = f"pred_{model_name_clean}"
+        exact_match_column_name = f"exact_match_{model_name_clean}"
 
-            # Add full LLM responses (chain of thought)
-            inference_df[cot_column_name] = responses
+        # Add full LLM responses (chain of thought)
+        inference_df[cot_column_name] = responses
 
-            # Parse answers from responses
-            parsed_answers = [
-                parse_answer_from_response(response) for response in responses
+        # Parse answers from responses
+        parsed_answers = [
+            parse_answer_from_response(response) for response in responses
+        ]
+        inference_df[pred_column_name] = parsed_answers
+
+        # Compute exact match scores if golden_answers are available
+        if has_golden_answers:
+            exact_matches = [
+                compute_exact_match(pred_answer, golden_answers)
+                for pred_answer, golden_answers in zip(
+                    parsed_answers, inference_df['golden_answers'])
             ]
-            inference_df[pred_column_name] = parsed_answers
+            inference_df[exact_match_column_name] = exact_matches
+            print(f"✅ Successfully computed exact match scores")
 
-            print(
-                f"✅ Successfully added predictions to columns: {cot_column_name}, {pred_column_name}"
-            )
+        print(
+            f"✅ Successfully added predictions to columns: {cot_column_name}, {pred_column_name}"
+        )
 
-        except Exception as e:
-            print(f"❌ Error running inference with {model_name}: {str(e)}")
-            # Add error columns with error messages
-            model_name_clean = model_name.replace('/', '_').replace(
-                '-', '_').replace('.', '_')
-            cot_column_name = f"cot_{model_name_clean}"
-            pred_column_name = f"pred_{model_name_clean}"
-            inference_df[cot_column_name] = [f"ERROR: {str(e)}"
-                                             ] * len(inference_df)
-            inference_df[pred_column_name] = ["ERROR"] * len(inference_df)
+    except Exception as e:
+        print(f"❌ Error running inference with {model_name}: {str(e)}")
+        # Add error columns with error messages
+        model_name_clean = model_name.replace('/', '_').replace('-',
+                                                                '_').replace(
+                                                                    '.', '_')
+        cot_column_name = f"cot_{model_name_clean}"
+        pred_column_name = f"pred_{model_name_clean}"
+        exact_match_column_name = f"exact_match_{model_name_clean}"
+        inference_df[cot_column_name] = [f"ERROR: {str(e)}"
+                                         ] * len(inference_df)
+        inference_df[pred_column_name] = ["ERROR"] * len(inference_df)
+        if has_golden_answers:
+            inference_df[exact_match_column_name] = [False] * len(inference_df)
 
     # Choose judge model and backend
     if judge_backend == 'api':
@@ -418,9 +488,13 @@ def main(num_questions: int = 100, judge_backend: str = 'api'):
         print(f"\n--- Example {i+1} ---")
         print(f"Question: {inference_df.iloc[i]['question']}")
         print(f"Ground Truth: {inference_df.iloc[i]['answer']}")
+        if has_golden_answers:
+            print(f"Golden Answers: {inference_df.iloc[i]['golden_answers']}")
         for col in inference_df.columns:
             if col.startswith('pred_'):
                 print(f"Prediction ({col}): {inference_df.iloc[i][col]}")
+            elif col.startswith('exact_match_'):
+                print(f"Exact Match ({col}): {inference_df.iloc[i][col]}")
             elif col.startswith('cot_'):
                 print(
                     f"Chain of Thought ({col}): {inference_df.iloc[i][col][:100]}..."
@@ -471,11 +545,42 @@ def main(num_questions: int = 100, judge_backend: str = 'api'):
                 print(f"\nModel: {model_name}")
                 print(f"  No valid evaluations (all predictions were ERROR)")
 
+    # Show exact match summary if available
+    if has_golden_answers:
+        print("\n" + "=" * 40)
+        print("EXACT MATCH SUMMARY")
+        print("=" * 40)
+
+        for col in inference_df.columns:
+            if col.startswith('exact_match_'):
+                model_name = col.replace('exact_match_', '')
+                exact_matches = inference_df[col]
+
+                # Calculate exact match metrics
+                total_valid = len(
+                    [em for em in exact_matches if isinstance(em, bool)])
+                if total_valid > 0:
+                    exact_match_count = sum(exact_matches)
+                    exact_match_rate = exact_match_count / total_valid * 100
+
+                    print(f"\nModel: {model_name}")
+                    print(
+                        f"  Exact matches: {exact_match_count}/{total_valid} ({exact_match_rate:.1f}%)"
+                    )
+                else:
+                    print(f"\nModel: {model_name}")
+                    print(f"  No valid exact match evaluations")
+
     # Save results
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
-    output_file = os.path.join(results_dir,
-                               "bioasq_qwen_local_inference_results.csv")
+
+    # Create filename with model name included
+    model_name_clean = model_name.replace('/',
+                                          '_').replace('-',
+                                                       '_').replace('.', '_')
+    output_file = os.path.join(
+        results_dir, f"bioasq_{model_name_clean}_inference_results.csv")
     inference_df.to_csv(output_file, index=False)
     print(f"\n💾 Results saved to: {output_file}")
 
@@ -571,7 +676,10 @@ if __name__ == "__main__":
     # Uncomment the line you want to run:
 
     # For interactive LLM session (testing/debugging)
-    interactive_llm_session()
+    # interactive_llm_session()
 
     # For full evaluation pipeline
-    # results_df = main()
+    num_questions = 1609
+    dataset_name = "jmhb/bioasq_trainv0_n1609"
+    results_df = main(num_questions=num_questions, dataset_name=dataset_name)
+    ipdb.set_trace()

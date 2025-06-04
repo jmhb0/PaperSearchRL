@@ -1,6 +1,8 @@
 """
 python -m ipdb data_gen/test_retrieval.py
-Test Retrieval Script using existing E5 Encoder
+Test Retrieval Script retrievers. 
+Some tests take e5 off the shelf and compare retrieval scores for predefined queries and documents.
+We also test actually running retrieval for pubmed. 
 
 This script leverages the existing Encoder class from search_r1/search/retrieval_server.py
 to load the intfloat/e5-base-v2 embedding model and compute similarity scores.
@@ -13,13 +15,15 @@ import sys
 import os
 import numpy as np
 import torch
+import json
 from typing import List, Tuple
+from dataclasses import dataclass
 import ipdb
 
 # Add the search_r1 directory to the path so we can import from it
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'search_r1'))
 
-from search.retrieval_server import Encoder
+from search.retrieval_server import Encoder, BM25Retriever, DenseRetriever
 
 
 class RetrievalTester:
@@ -324,14 +328,172 @@ def test_encoder_methods():
     pass
 
 
+@dataclass
+class Config:
+    """Simple config class for retrieval parameters"""
+    retrieval_method: str = "e5"
+    retrieval_topk: int = 5
+    index_path: str = ""
+    corpus_path: str = "data/pubmed.jsonl"
+    retrieval_model_path: str = "intfloat/e5-base-v2"
+    retrieval_pooling_method: str = "mean"
+    retrieval_query_max_length: int = 256
+    retrieval_use_fp16: bool = False
+    retrieval_batch_size: int = 128
+    faiss_gpu: bool = False
+
+
+def test_pubmed_retrieval_full(retriever_method: str = "e5"):
+    """
+    Test PubMed retrieval using either E5 or BM25 method.
+    
+    Args:
+        retriever_method: Either "e5" or "bm25"
+    """
+    print(f"🔍 Testing PubMed Retrieval with {retriever_method.upper()}")
+    print("=" * 60)
+
+    # Validate retriever method
+    if retriever_method not in ["e5", "bm25"]:
+        raise ValueError("retriever_method must be 'e5' or 'bm25'")
+
+    # Set up paths based on retriever method
+    if retriever_method == "e5":
+        index_path = "data/pubmed/e5_Flat.index"
+        model_path = "intfloat/e5-base-v2"
+    else:  # bm25
+        index_path = "data/pubmed_bm25/bm25"  # Fixed: point to the nested bm25 directory
+        model_path = "none"
+
+    # Create config
+    config = Config(retrieval_method=retriever_method,
+                    retrieval_topk=5,
+                    index_path=index_path,
+                    corpus_path="data/pubmed.jsonl",
+                    retrieval_model_path=model_path)
+
+    # Initialize retriever
+    print(f"🚀 Initializing {retriever_method.upper()} retriever...")
+    if retriever_method == "bm25":
+        retriever = BM25Retriever(config)
+    else:
+        retriever = DenseRetriever(config)
+
+    # Load PMID lookup
+    print("📚 Loading PMID lookup...")
+    with open("data/pubmed-lookupPMID.json", "r") as f:
+        pmid_lookup = json.load(f)
+
+    # Test queries
+    queries = [
+        "Where, in the body, would the Cobb-Stainsby excision arthroplasty be performed?",
+        "What is the origin of HEp-2 cells?",
+        "Which disease is associated with the ectopic expression of the protein encoded by the gene DUX4?"
+    ]
+
+    print(f"\n🔎 Testing {len(queries)} queries:")
+    for i, query in enumerate(queries, 1):
+        print(f"  {i}. {query}")
+
+    # Process each query
+    all_results = {}
+
+    for query_idx, query in enumerate(queries, 1):
+        print(f"\n" + "=" * 80)
+        print(f"Query {query_idx}: {query}")
+        print("=" * 80)
+
+        # Retrieve documents
+        results, scores = retriever.search(query, num=5, return_score=True)
+
+        # Process results
+        query_results = []
+        for rank, (doc, score) in enumerate(zip(results, scores), 1):
+            # Get document ID (should be the index in the corpus)
+            doc_id = str(doc.get('id',
+                                 ''))  # Convert to string to match lookup keys
+
+            # Get PMID from lookup - FIX: The lookup maps PMID -> doc_id, so we need to reverse lookup
+            pmid = "Unknown"
+            for pmid_key, id_val in pmid_lookup.items():
+                if str(id_val) == doc_id:
+                    pmid = pmid_key
+                    break
+
+            # Extract document content
+            title = doc.get('title', '')
+            text = doc.get('text', '')
+            contents = doc.get('contents', '')
+
+            # Use contents if available, otherwise combine title and text
+            if contents:
+                document_text = contents
+            else:
+                document_text = f"{title}\n{text}" if title and text else (
+                    title or text)
+
+            result_info = {
+                'rank': rank,
+                'doc_id': doc_id,
+                'pmid': pmid,
+                'score': score,
+                'title': title,
+                'text': text[:200] +
+                "..." if len(text) > 200 else text,  # Truncate for display
+                'full_document': document_text
+            }
+
+            query_results.append(result_info)
+
+            # Display result
+            print(f"\n📄 Rank {rank} | Score: {score:.4f} | PMID: {pmid}")
+            print(f"   Doc ID: {doc_id}")
+            if title:
+                print(f"   Title: {title}")
+            # Show first 200 characters of the full document content
+            doc_preview = document_text[:200] + "..." if len(
+                document_text) > 200 else document_text
+            print(f"   Document: {doc_preview}")
+
+        all_results[f"query_{query_idx}"] = {
+            'query': query,
+            'results': query_results
+        }
+
+    # Summary
+    print(f"\n" + "=" * 80)
+    print(f"📊 SUMMARY - {retriever_method.upper()} Retrieval Results")
+    print("=" * 80)
+
+    for query_idx in range(1, len(queries) + 1):
+        query_key = f"query_{query_idx}"
+        query_data = all_results[query_key]
+        print(f"\nQuery {query_idx}: {query_data['query'][:50]}...")
+
+        for result in query_data['results']:
+            print(
+                f"  Rank {result['rank']}: Score {result['score']:.4f} | PMID {result['pmid']}"
+            )
+
+    print(f"\n✅ Completed {retriever_method.upper()} retrieval test!")
+
+    # Set breakpoint for interactive exploration
+    ipdb.set_trace()
+    pass
+
+    return all_results
+
+
 if __name__ == "__main__":
-    # Run the main example test
-    test_retrieval_example()
+    # Run the PubMed retrieval test
+    # Test with E5 method (default)
+    # test_pubmed_retrieval_full(retriever_method="bm25")
+    test_pubmed_retrieval_full(retriever_method="e5")
 
-    # Test individual encoder methods
+    # Uncomment the line below to test with BM25 method
+    # test_pubmed_retrieval_full(retriever_method="bm25")
+
+    # Uncomment the lines below for other tests
+    # test_retrieval_example()
     # test_encoder_methods()
-
-    # Uncomment the line below for interactive testing
     # interactive_similarity_tester()
-
-    print("\n🎉 All tests completed!")

@@ -13,6 +13,10 @@
 # limitations under the License.
 """
 Preprocess the nq dataset to parquet format
+Modified from Search-R1 by adding flag --data_source. default is nq, which is equivalent to original Search-R1.
+Otherwise, can choose a HF dataset instead. It must have a train and test splits; must have columns 'question' and 'golden_answers'.
+e.g. 
+    python -m ipdb scripts/data_process/nq_search.py --data_source jmhb/bioasq_trainv0_n1609_test100
 """
 
 import re
@@ -42,9 +46,12 @@ If you find no further external knowledge needed, you can directly provide the a
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--local_dir', default='./data/nq_search')
+    # parser.add_argument('--local_dir', default='./data/nq_search')
     parser.add_argument('--hdfs_dir', default=None)
     parser.add_argument('--template_type', type=str, default='base')
+    parser.add_argument(
+        '--data_source', type=str,
+        default='nq')  # 'nq' for default, or provide HF dataset
     parser.add_argument('--num_train_samples',
                         type=int,
                         default=None,
@@ -59,10 +66,14 @@ if __name__ == '__main__':
                         help="Random seed for shuffling")
 
     args = parser.parse_args()
+    data_source = args.data_source
 
-    data_source = 'nq'
-
-    dataset = datasets.load_dataset('RUC-NLPIR/FlashRAG_datasets', 'nq')
+    if data_source == 'nq':
+        dataset = datasets.load_dataset('RUC-NLPIR/FlashRAG_datasets', 'nq')
+        args.local_dir = "./data/nq_search"
+    else:
+        dataset = datasets.load_dataset(data_source)
+        args.local_dir = f"./data/{data_source}_search"
 
     train_dataset = dataset['train']
     test_dataset = dataset['test']
@@ -117,6 +128,11 @@ if __name__ == '__main__':
 
     train_dataset.to_parquet(os.path.join(local_dir, 'train.parquet'))
     test_dataset.to_parquet(os.path.join(local_dir, 'test.parquet'))
+
+    print(
+        f"Processed {len(train_dataset)} training samples and {len(test_dataset)} test samples"
+    )
+    print(f"Local directory: {local_dir}")
 
     if hdfs_dir is not None:
         makedirs(hdfs_dir)
