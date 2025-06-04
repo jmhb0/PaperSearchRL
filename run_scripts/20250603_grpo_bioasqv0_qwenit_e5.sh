@@ -10,7 +10,7 @@ export TOTAL_GPUS=${TOTAL_GPUS:-8}  # Set total GPUs available
 export RETRIEVAL_GPUS=2
 
 export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
-export EXPERIMENT_NAME=20250603_grpo_bioasqv0_qwenit_bm25
+export EXPERIMENT_NAME=20250603_grpo_bioasqv0_qwenit_e5
 
 DATA_SOURCE=jmhb/bioasq_trainv0_n1609_test100
 corpus_file=data/pubmed_restricted_jmhb_bioasq_trainv0_n1609_test100.jsonl
