@@ -22,8 +22,14 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 import re
 import numpy as np
 
+
 def _select_rm_score_fn(data_source):
-    if data_source in ['nq', 'triviaqa', 'popqa', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle']:
+    if data_source in [
+            'nq', 'triviaqa', 'popqa', 'hotpotqa', '2wikimultihopqa',
+            'musique', 'bamboogle'
+    ]:
+        return qa_em.compute_score_em
+    elif "bioasq" in data_source:
         return qa_em.compute_score_em
     else:
         raise NotImplementedError
@@ -45,7 +51,8 @@ class RewardManager():
         if 'rm_scores' in data.batch.keys():
             return data.batch['rm_scores']
 
-        reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+        reward_tensor = torch.zeros_like(data.batch['responses'],
+                                         dtype=torch.float32)
 
         # all_scores = []
 
@@ -58,24 +65,29 @@ class RewardManager():
 
             prompt_length = prompt_ids.shape[-1]
 
-            valid_prompt_length = data_item.batch['attention_mask'][:prompt_length].sum()
+            valid_prompt_length = data_item.batch[
+                'attention_mask'][:prompt_length].sum()
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
 
             response_ids = data_item.batch['responses']
-            valid_response_length = data_item.batch['attention_mask'][prompt_length:].sum()
+            valid_response_length = data_item.batch['attention_mask'][
+                prompt_length:].sum()
             valid_response_ids = response_ids[:valid_response_length]
 
             # decode
             sequences = torch.cat((valid_prompt_ids, valid_response_ids))
             sequences_str = self.tokenizer.decode(sequences)
 
-            ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
+            ground_truth = data_item.non_tensor_batch['reward_model'][
+                'ground_truth']
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
             compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
+            score = compute_score_fn(solution_str=sequences_str,
+                                     ground_truth=ground_truth,
+                                     format_score=self.format_score)
 
             reward_tensor[i, valid_response_length - 1] = score
             # all_scores.append(score)
@@ -86,7 +98,7 @@ class RewardManager():
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
                 print(sequences_str)
-        
+
         # print(f"[DEBUG] all_scores: {all_scores}")
         # print(f"[DEBUG] all_scores shape: {np.array(all_scores).shape}")
         # print(f"[DEBUG] all_scores mean: {np.mean(all_scores)}")
@@ -105,7 +117,12 @@ import hydra
 def main(config):
     if not ray.is_initialized():
         # this is for local ray cluster
-        ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
+        ray.init(runtime_env={
+            'env_vars': {
+                'TOKENIZERS_PARALLELISM': 'true',
+                'NCCL_DEBUG': 'WARN'
+            }
+        })
 
     ray.get(main_task.remote(config))
 
@@ -118,7 +135,8 @@ def main_task(config):
     # print initial config
     from pprint import pprint
     from omegaconf import OmegaConf
-    pprint(OmegaConf.to_container(config, resolve=True))  # resolve=True will eval symbol values
+    pprint(OmegaConf.to_container(
+        config, resolve=True))  # resolve=True will eval symbol values
     OmegaConf.resolve(config)
 
     # env_class = ENV_CLASS_MAPPING[config.env.name]
@@ -156,7 +174,8 @@ def main_task(config):
 
     global_pool_id = 'global_pool'
     resource_pool_spec = {
-        global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+        global_pool_id:
+        [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
     }
     mapping = {
         Role.ActorRollout: global_pool_id,
@@ -185,15 +204,17 @@ def main_task(config):
     # Note that we always use function-based RM for validation
     val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
 
-    resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
-    trainer = RayPPOTrainer(config=config,
-                            tokenizer=tokenizer,
-                            role_worker_mapping=role_worker_mapping,
-                            resource_pool_manager=resource_pool_manager,
-                            ray_worker_group_cls=ray_worker_group_cls,
-                            reward_fn=reward_fn,
-                            val_reward_fn=val_reward_fn,
-                            )
+    resource_pool_manager = ResourcePoolManager(
+        resource_pool_spec=resource_pool_spec, mapping=mapping)
+    trainer = RayPPOTrainer(
+        config=config,
+        tokenizer=tokenizer,
+        role_worker_mapping=role_worker_mapping,
+        resource_pool_manager=resource_pool_manager,
+        ray_worker_group_cls=ray_worker_group_cls,
+        reward_fn=reward_fn,
+        val_reward_fn=val_reward_fn,
+    )
     trainer.init_workers()
     trainer.fit()
 

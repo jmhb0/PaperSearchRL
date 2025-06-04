@@ -47,13 +47,13 @@ python search_r1/search/retrieval_server.py --index_path $index_file \
                                             --topk 3 \
                                             --retriever_name $retriever_name \
                                             --retriever_model $retriever_path \
-                                            --faiss_gpu
+                                            --faiss_gpu &
 
 SERVER_PID=$! 
 echo "Waiting for server to start..."
 while ! curl -s 'http://0.0.0.0:8000/retrieve' > /dev/null 2>&1; do
-    echo "Server is not ready yet... sleeping 30 seconds"
-    sleep 30
+    echo "Server is not ready yet... sleeping 15 seconds"
+    sleep 15
 done
 echo "Server is ready!"
 
@@ -61,6 +61,7 @@ echo "Server is ready!"
 source /opt/conda/etc/profile.d/conda.sh
 conda activate searchr1
 pip install -e .
+pip install ipdb
 echo "installed searchr1 env"
 
 ## training with remaining GPUs
@@ -68,7 +69,7 @@ export GPU_COUNT=$TRAINING_GPU_COUNT
 export CUDA_VISIBLE_DEVICES=$TRAINING_GPU_IDS
 
 ## training 
-export DATA_DIR='data/${DATA_SOURCE}/'
+export DATA_DIR="data/${DATA_SOURCE}_search/"
 export TRAIN_DATA_DIR=$DATA_DIR
 export TEST_DATA_DIR=$DATA_DIR
 # export RETRIEVER_URL='http://pasteur6.stanford.edu:8000/retrieve'
@@ -138,6 +139,7 @@ else
   PPO_MINI_BATCH_SIZE=256
   PPO_MICRO_BATCH_SIZE=64
 fi
+VAL_BATCH_SIZE=100
 
 echo "Training configuration for $GPU_COUNT GPUs:"
 echo "  BATCH_SIZE=$BATCH_SIZE"
