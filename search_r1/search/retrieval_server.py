@@ -18,21 +18,28 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 def load_corpus(corpus_path: str):
     start_time = time.time()
     logger.info(f"Loading corpus from {corpus_path}...")
-    corpus = datasets.load_dataset(
-        'json', 
-        data_files=corpus_path,
-        split="train",
-        num_proc=4
-    )
+    corpus = datasets.load_dataset('json',
+                                   data_files=corpus_path,
+                                   split="train",
+                                   num_proc=4)
     elapsed = time.time() - start_time
     logger.info(f"✓ Corpus loaded in {elapsed:.2f} seconds")
+
+    # Print the number of documents in the corpus
+    num_docs = len(corpus)
+    print(f"📊 Number of documents in corpus: {num_docs:,}")
+    logger.info(f"📊 Number of documents in corpus: {num_docs:,}")
+
     return corpus
+
 
 def read_jsonl(file_path):
     data = []
@@ -41,32 +48,37 @@ def read_jsonl(file_path):
             data.append(json.loads(line))
     return data
 
+
 def load_docs(corpus, doc_idxs):
     results = [corpus[int(idx)] for idx in doc_idxs]
     return results
 
+
 def load_model(model_path: str, use_fp16: bool = False):
     start_time = time.time()
     logger.info(f"Loading model from {model_path}...")
-    model_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    model_config = AutoConfig.from_pretrained(model_path,
+                                              trust_remote_code=True)
     model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
     model.eval()
     model.cuda()
-    if use_fp16: 
+    if use_fp16:
         model = model.half()
-    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path,
+                                              use_fast=True,
+                                              trust_remote_code=True)
     elapsed = time.time() - start_time
     logger.info(f"✓ Model loaded in {elapsed:.2f} seconds")
     return model, tokenizer
 
-def pooling(
-    pooler_output,
-    last_hidden_state,
-    attention_mask = None,
-    pooling_method = "mean"
-):
+
+def pooling(pooler_output,
+            last_hidden_state,
+            attention_mask=None,
+            pooling_method="mean"):
     if pooling_method == "mean":
-        last_hidden = last_hidden_state.masked_fill(~attention_mask[..., None].bool(), 0.0)
+        last_hidden = last_hidden_state.masked_fill(
+            ~attention_mask[..., None].bool(), 0.0)
         return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
     elif pooling_method == "cls":
         return last_hidden_state[:, 0]
@@ -75,20 +87,24 @@ def pooling(
     else:
         raise NotImplementedError("Pooling method not implemented!")
 
+
 class Encoder:
-    def __init__(self, model_name, model_path, pooling_method, max_length, use_fp16):
+
+    def __init__(self, model_name, model_path, pooling_method, max_length,
+                 use_fp16):
         start_time = time.time()
         logger.info(f"Initializing encoder with model: {model_name}")
-        
+
         self.model_name = model_name
         self.model_path = model_path
         self.pooling_method = pooling_method
         self.max_length = max_length
         self.use_fp16 = use_fp16
 
-        self.model, self.tokenizer = load_model(model_path=model_path, use_fp16=use_fp16)
+        self.model, self.tokenizer = load_model(model_path=model_path,
+                                                use_fp16=use_fp16)
         self.model.eval()
-        
+
         elapsed = time.time() - start_time
         logger.info(f"✓ Encoder initialized in {elapsed:.2f} seconds")
 
@@ -106,82 +122,95 @@ class Encoder:
 
         if "bge" in self.model_name.lower():
             if is_query:
-                query_list = [f"Represent this sentence for searching relevant passages: {query}" for query in query_list]
+                query_list = [
+                    f"Represent this sentence for searching relevant passages: {query}"
+                    for query in query_list
+                ]
 
         inputs = self.tokenizer(query_list,
                                 max_length=self.max_length,
                                 padding=True,
                                 truncation=True,
-                                return_tensors="pt"
-                                )
+                                return_tensors="pt")
         inputs = {k: v.cuda() for k, v in inputs.items()}
 
         if "T5" in type(self.model).__name__:
             # T5-based retrieval model
             decoder_input_ids = torch.zeros(
-                (inputs['input_ids'].shape[0], 1), dtype=torch.long
-            ).to(inputs['input_ids'].device)
-            output = self.model(
-                **inputs, decoder_input_ids=decoder_input_ids, return_dict=True
-            )
+                (inputs['input_ids'].shape[0], 1),
+                dtype=torch.long).to(inputs['input_ids'].device)
+            output = self.model(**inputs,
+                                decoder_input_ids=decoder_input_ids,
+                                return_dict=True)
             query_emb = output.last_hidden_state[:, 0, :]
         else:
             output = self.model(**inputs, return_dict=True)
-            query_emb = pooling(output.pooler_output,
-                                output.last_hidden_state,
-                                inputs['attention_mask'],
-                                self.pooling_method)
+            query_emb = pooling(output.pooler_output, output.last_hidden_state,
+                                inputs['attention_mask'], self.pooling_method)
             if "dpr" not in self.model_name.lower():
                 query_emb = torch.nn.functional.normalize(query_emb, dim=-1)
 
         query_emb = query_emb.detach().cpu().numpy()
         query_emb = query_emb.astype(np.float32, order="C")
-        
+
         del inputs, output
         torch.cuda.empty_cache()
 
         return query_emb
 
+
 class BaseRetriever:
+
     def __init__(self, config):
         self.config = config
         self.retrieval_method = config.retrieval_method
         self.topk = config.retrieval_topk
-        
+
         self.index_path = config.index_path
         self.corpus_path = config.corpus_path
 
     def _search(self, query: str, num: int, return_score: bool):
         raise NotImplementedError
 
-    def _batch_search(self, query_list: List[str], num: int, return_score: bool):
+    def _batch_search(self, query_list: List[str], num: int,
+                      return_score: bool):
         raise NotImplementedError
 
     def search(self, query: str, num: int = None, return_score: bool = False):
         return self._search(query, num, return_score)
-    
-    def batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
+
+    def batch_search(self,
+                     query_list: List[str],
+                     num: int = None,
+                     return_score: bool = False):
         return self._batch_search(query_list, num, return_score)
 
+
 class BM25Retriever(BaseRetriever):
+
     def __init__(self, config):
         start_time = time.time()
         logger.info("Initializing BM25 retriever...")
-        
+
         super().__init__(config)
         from pyserini.search.lucene import LuceneSearcher
-        
+
         index_start = time.time()
         logger.info(f"Loading BM25 index from {self.index_path}...")
         self.searcher = LuceneSearcher(self.index_path)
         index_elapsed = time.time() - index_start
         logger.info(f"✓ BM25 index loaded in {index_elapsed:.2f} seconds")
-        
+
+        # Print the number of items in the BM25 index
+        num_docs_in_index = self.searcher.num_docs
+        print(f"📊 Number of items in BM25 index: {num_docs_in_index:,}")
+        logger.info(f"📊 Number of items in BM25 index: {num_docs_in_index:,}")
+
         self.contain_doc = self._check_contain_doc()
         if not self.contain_doc:
             self.corpus = load_corpus(self.corpus_path)
         self.max_process_num = 8
-        
+
         elapsed = time.time() - start_time
         logger.info(f"✓ BM25 retriever initialized in {elapsed:.2f} seconds")
 
@@ -205,17 +234,14 @@ class BM25Retriever(BaseRetriever):
 
         if self.contain_doc:
             all_contents = [
-                json.loads(self.searcher.doc(hit.docid).raw())['contents'] 
+                json.loads(self.searcher.doc(hit.docid).raw())['contents']
                 for hit in hits
             ]
-            results = [
-                {
-                    'title': content.split("\n")[0].strip("\""),
-                    'text': "\n".join(content.split("\n")[1:]),
-                    'contents': content
-                } 
-                for content in all_contents
-            ]
+            results = [{
+                'title': content.split("\n")[0].strip("\""),
+                'text': "\n".join(content.split("\n")[1:]),
+                'contents': content
+            } for content in all_contents]
         else:
             results = load_docs(self.corpus, [hit.docid for hit in hits])
 
@@ -224,7 +250,10 @@ class BM25Retriever(BaseRetriever):
         else:
             return results
 
-    def _batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
+    def _batch_search(self,
+                      query_list: List[str],
+                      num: int = None,
+                      return_score: bool = False):
         results = []
         scores = []
         for query in query_list:
@@ -236,20 +265,28 @@ class BM25Retriever(BaseRetriever):
         else:
             return results
 
+
 class DenseRetriever(BaseRetriever):
+
     def __init__(self, config):
         start_time = time.time()
         logger.info("Initializing dense retriever...")
-        
+
         super().__init__(config)
-        
+
         # Load FAISS index
         index_start = time.time()
         logger.info(f"Loading FAISS index from {self.index_path}...")
         self.index = faiss.read_index(self.index_path)
         index_elapsed = time.time() - index_start
         logger.info(f"✓ FAISS index loaded in {index_elapsed:.2f} seconds")
-        
+
+        # Print the number of items in the FAISS index
+        num_vectors_in_index = self.index.ntotal
+        print(f"📊 Number of items in FAISS index: {num_vectors_in_index:,}")
+        logger.info(
+            f"📊 Number of items in FAISS index: {num_vectors_in_index:,}")
+
         if config.faiss_gpu:
             gpu_start = time.time()
             logger.info("Moving FAISS index to GPU...")
@@ -258,22 +295,21 @@ class DenseRetriever(BaseRetriever):
             co.shard = True
             self.index = faiss.index_cpu_to_all_gpus(self.index, co=co)
             gpu_elapsed = time.time() - gpu_start
-            logger.info(f"✓ FAISS index moved to GPU in {gpu_elapsed:.2f} seconds")
+            logger.info(
+                f"✓ FAISS index moved to GPU in {gpu_elapsed:.2f} seconds")
 
         # Load corpus
         self.corpus = load_corpus(self.corpus_path)
-        
+
         # Initialize encoder
-        self.encoder = Encoder(
-            model_name = self.retrieval_method,
-            model_path = config.retrieval_model_path,
-            pooling_method = config.retrieval_pooling_method,
-            max_length = config.retrieval_query_max_length,
-            use_fp16 = config.retrieval_use_fp16
-        )
+        self.encoder = Encoder(model_name=self.retrieval_method,
+                               model_path=config.retrieval_model_path,
+                               pooling_method=config.retrieval_pooling_method,
+                               max_length=config.retrieval_query_max_length,
+                               use_fp16=config.retrieval_use_fp16)
         self.topk = config.retrieval_topk
         self.batch_size = config.retrieval_batch_size
-        
+
         elapsed = time.time() - start_time
         logger.info(f"✓ Dense retriever initialized in {elapsed:.2f} seconds")
 
@@ -290,15 +326,19 @@ class DenseRetriever(BaseRetriever):
         else:
             return results
 
-    def _batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
+    def _batch_search(self,
+                      query_list: List[str],
+                      num: int = None,
+                      return_score: bool = False):
         if isinstance(query_list, str):
             query_list = [query_list]
         if num is None:
             num = self.topk
-        
+
         results = []
         scores = []
-        for start_idx in tqdm(range(0, len(query_list), self.batch_size), desc='Retrieval process: '):
+        for start_idx in tqdm(range(0, len(query_list), self.batch_size),
+                              desc='Retrieval process: '):
             query_batch = query_list[start_idx:start_idx + self.batch_size]
             batch_emb = self.encoder.encode(query_batch)
             batch_scores, batch_idxs = self.index.search(batch_emb, k=num)
@@ -309,18 +349,22 @@ class DenseRetriever(BaseRetriever):
             flat_idxs = sum(batch_idxs, [])
             batch_results = load_docs(self.corpus, flat_idxs)
             # chunk them back
-            batch_results = [batch_results[i*num : (i+1)*num] for i in range(len(batch_idxs))]
-            
+            batch_results = [
+                batch_results[i * num:(i + 1) * num]
+                for i in range(len(batch_idxs))
+            ]
+
             results.extend(batch_results)
             scores.extend(batch_scores)
-            
+
             del batch_emb, batch_scores, batch_idxs, query_batch, flat_idxs, batch_results
             torch.cuda.empty_cache()
-            
+
         if return_score:
             return results, scores
         else:
             return results
+
 
 def get_retriever(config):
     if config.retrieval_method == "bm25":
@@ -333,26 +377,26 @@ def get_retriever(config):
 # FastAPI server below
 #####################################
 
+
 class Config:
     """
     Minimal config class (simulating your argparse) 
     Replace this with your real arguments or load them dynamically.
     """
-    def __init__(
-        self, 
-        retrieval_method: str = "bm25", 
-        retrieval_topk: int = 10,
-        index_path: str = "./index/bm25",
-        corpus_path: str = "./data/corpus.jsonl",
-        dataset_path: str = "./data",
-        data_split: str = "train",
-        faiss_gpu: bool = True,
-        retrieval_model_path: str = "./model",
-        retrieval_pooling_method: str = "mean",
-        retrieval_query_max_length: int = 256,
-        retrieval_use_fp16: bool = False,
-        retrieval_batch_size: int = 128
-    ):
+
+    def __init__(self,
+                 retrieval_method: str = "bm25",
+                 retrieval_topk: int = 10,
+                 index_path: str = "./index/bm25",
+                 corpus_path: str = "./data/corpus.jsonl",
+                 dataset_path: str = "./data",
+                 data_split: str = "train",
+                 faiss_gpu: bool = True,
+                 retrieval_model_path: str = "./model",
+                 retrieval_pooling_method: str = "mean",
+                 retrieval_query_max_length: int = 256,
+                 retrieval_use_fp16: bool = False,
+                 retrieval_batch_size: int = 128):
         self.retrieval_method = retrieval_method
         self.retrieval_topk = retrieval_topk
         self.index_path = index_path
@@ -375,6 +419,7 @@ class QueryRequest(BaseModel):
 
 app = FastAPI()
 
+
 @app.post("/retrieve")
 def retrieve_endpoint(request: QueryRequest):
     """
@@ -393,9 +438,8 @@ def retrieve_endpoint(request: QueryRequest):
     results, scores = retriever.batch_search(
         query_list=request.queries,
         num=request.topk,
-        return_score=request.return_scores
-    )
-    
+        return_score=request.return_scores)
+
     # Format response
     resp = []
     for i, single_result in enumerate(results):
@@ -413,23 +457,43 @@ def retrieve_endpoint(request: QueryRequest):
 if __name__ == "__main__":
     total_start = time.time()
     logger.info("Starting retrieval server initialization...")
-    
-    parser = argparse.ArgumentParser(description="Launch the local faiss retriever.")
-    parser.add_argument("--index_path", type=str, default="/home/peterjin/mnt/index/wiki-18/e5_Flat.index", help="Corpus indexing file.")
-    parser.add_argument("--corpus_path", type=str, default="/home/peterjin/mnt/data/retrieval-corpus/wiki-18.jsonl", help="Local corpus file.")
-    parser.add_argument("--topk", type=int, default=3, help="Number of retrieved passages for one query.")
-    parser.add_argument("--retriever_name", type=str, default="e5", help="Name of the retriever model.")
-    parser.add_argument("--retriever_model", type=str, default="intfloat/e5-base-v2", help="Path of the retriever model.")
-    parser.add_argument('--faiss_gpu', action='store_true', help='Use GPU for computation')
+
+    parser = argparse.ArgumentParser(
+        description="Launch the local faiss retriever.")
+    parser.add_argument(
+        "--index_path",
+        type=str,
+        default="/home/peterjin/mnt/index/wiki-18/e5_Flat.index",
+        help="Corpus indexing file.")
+    parser.add_argument(
+        "--corpus_path",
+        type=str,
+        default="/home/peterjin/mnt/data/retrieval-corpus/wiki-18.jsonl",
+        help="Local corpus file.")
+    parser.add_argument("--topk",
+                        type=int,
+                        default=3,
+                        help="Number of retrieved passages for one query.")
+    parser.add_argument("--retriever_name",
+                        type=str,
+                        default="e5",
+                        help="Name of the retriever model.")
+    parser.add_argument("--retriever_model",
+                        type=str,
+                        default="intfloat/e5-base-v2",
+                        help="Path of the retriever model.")
+    parser.add_argument('--faiss_gpu',
+                        action='store_true',
+                        help='Use GPU for computation')
 
     args = parser.parse_args()
-    
+
     # 1) Build a config (could also parse from arguments).
     #    In real usage, you'd parse your CLI arguments or environment variables.
     config_start = time.time()
     logger.info("Building configuration...")
     config = Config(
-        retrieval_method = args.retriever_name,  # or "dense"
+        retrieval_method=args.retriever_name,  # or "dense"
         index_path=args.index_path,
         corpus_path=args.corpus_path,
         retrieval_topk=args.topk,
@@ -449,10 +513,12 @@ if __name__ == "__main__":
     retriever = get_retriever(config)
     retriever_elapsed = time.time() - retriever_start
     logger.info(f"✓ Retriever initialized in {retriever_elapsed:.2f} seconds")
-    
+
     total_elapsed = time.time() - total_start
-    logger.info(f"🚀 Server initialization completed in {total_elapsed:.2f} seconds total")
-    
+    logger.info(
+        f"🚀 Server initialization completed in {total_elapsed:.2f} seconds total"
+    )
+
     # 3) Launch the server. By default, it listens on http://127.0.0.1:8000
     logger.info("Starting FastAPI server on http://0.0.0.0:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
