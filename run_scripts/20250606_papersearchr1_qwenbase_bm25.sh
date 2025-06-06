@@ -9,6 +9,12 @@ ln -s /home/jovyan/shared/jmhb/paper-search-rl/data/  data
 export TOTAL_GPUS=${TOTAL_GPUS:-8}  # Set total GPUs available 
 export RETRIEVAL_GPUS=0
 
+export HF_HOME=data/hf_cache
+export TRANSFORMERS_CACHE=data/hf_cache
+export HF_DATASETS_CACHE=data/hf_cache
+mkdir -p data/hf_cache
+
+
 export BASE_MODEL='Qwen/Qwen2.5-3B'
 export EXPERIMENT_NAME=20250606_papersearchr1_qwenbase_bm25
 

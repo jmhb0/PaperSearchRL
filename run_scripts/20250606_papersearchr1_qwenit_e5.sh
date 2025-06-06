@@ -12,6 +12,12 @@ export RETRIEVAL_GPUS=0
 export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
 export EXPERIMENT_NAME=20250606_papersearchr1_qwenit_e5
 
+export HF_HOME=data/hf_cache
+export TRANSFORMERS_CACHE=data/hf_cache
+export HF_DATASETS_CACHE=data/hf_cache
+mkdir -p data/hf_cache
+
+
 DATA_SOURCE=jmhb/papersearchrl_v0_n1500_test200
 corpus_file=data/pubmed.jsonl
 retriever_name=e5
