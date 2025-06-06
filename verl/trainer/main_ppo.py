@@ -31,6 +31,8 @@ def _select_rm_score_fn(data_source):
         return qa_em.compute_score_em
     elif "bioasq" in data_source:
         return qa_em.compute_score_em
+    elif "papersearchr1" in data_source:
+        return qa_em.compute_score_em
     else:
         raise NotImplementedError
 
