@@ -536,11 +536,12 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     test_cost_tracking()
 
-response, cost = call_llm("What is the capital of France?", include_cost=True)
-print(f"Response: {response}")
-print(f"Cost: ${cost:.8f} USD")
+    response, cost = call_llm("What is the capital of France?",
+                              include_cost=True)
+    print(f"Response: {response}")
+    print(f"Cost: ${cost:.8f} USD")
 
-responses, costs = call_llm_batch(prompts=["What is 2+2?", "Name a color."],
-                                  include_cost=True)
-total_cost = sum(costs)
-print(f"Total cost: ${total_cost:.8f} USD")
+    responses, costs = call_llm_batch(
+        prompts=["What is 2+2?", "Name a color."], include_cost=True)
+    total_cost = sum(costs)
+    print(f"Total cost: ${total_cost:.8f} USD")
