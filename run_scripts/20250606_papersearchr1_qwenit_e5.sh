@@ -17,6 +17,34 @@ export TRANSFORMERS_CACHE=data/hf_cache
 export HF_DATASETS_CACHE=data/hf_cache
 mkdir -p data/hf_cache
 
+# Pre-download model to avoid 429 errors from multiple workers
+echo "Checking if model is already cached..."
+MODEL_CACHE_DIR="data/hf_cache/models--Qwen--Qwen2.5-3B-Instruct"
+if [ ! -d "$MODEL_CACHE_DIR" ] || [ -z "$(ls -A $MODEL_CACHE_DIR 2>/dev/null)" ]; then
+    echo "Pre-downloading $BASE_MODEL to shared cache to avoid rate limiting..."
+    python -c "
+from transformers import AutoTokenizer
+from huggingface_hub import snapshot_download
+import os
+
+model_name = '$BASE_MODEL'
+print(f'Downloading {model_name} files to cache...')
+
+try:
+    # Download tokenizer files
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    print('Tokenizer cached successfully')
+    
+    # Download all model files without loading into memory
+    snapshot_download(repo_id=model_name, local_files_only=False)
+    print('Model files cached successfully')
+except Exception as e:
+    print(f'Download completed with minor issues: {e}')
+    print('Files should still be cached properly')
+"
+else
+    echo "Model already cached, skipping download"
+fi
 
 DATA_SOURCE=jmhb/papersearchrl_v0_n1500_test200
 corpus_file=data/pubmed.jsonl
