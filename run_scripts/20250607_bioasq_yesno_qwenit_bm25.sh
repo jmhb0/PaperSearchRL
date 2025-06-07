@@ -46,13 +46,12 @@ else
     echo "Model already cached, skipping download"
 fi
 
-DATA_SOURCE=jmhb/jmhb/bioasq_yesno_trainv0_n1464_test100
+DATA_SOURCE=jmhb/bioasq_yesno_trainv0_n1464_test100
 corpus_file=data/pubmed.jsonl
 # retriever_name=e5
 retriever_name=bm25
 if [ "$retriever_name" = "e5" ]; then
-    index_file=data/pubmed_e5/e5_Flat.index
-    retriever_path=intfloat/e5-base-v2
+    index_file=data/pubmed_e5/e5_Flat.index retriever_path=intfloat/e5-base-v2
 elif [ "$retriever_name" = "bm25" ]; then
     index_file=data/pubmed_bm25/bm25
     retriever_path=none
