@@ -140,6 +140,122 @@ TITLE AND ABSTRACT
 {title_abstract}
 """
 
+# this template is adjusted after Duo's feedback
+TEMPLATE_2 = """
+BACKGROUND
+You are a domain-expert biomedical NLP assistant.
+You are helping me to create an open-domain QA dataset. 
+The downstream task will read a query and require an agent to search over Pubmed abstracts
+
+--------
+YOUR TASK 
+I will provide you with title and abstract of a Pubmed article. 
+Your task is to create a new question-answer pair. 
+
+--------
+TYPES OF QUESTIONS
+The questions should be 'factoid based'. 
+The answer should be a simple entity. 
+It should not be ambiguous.
+Don't be pretentious. 
+
+--------
+IMPORTANT NOTES
+The question-answer pair will be used to evaluation question-answering systems with retrieval. Ths means the target system does not know which paper the question was sourced from. So an inappropriate question would be "What technology is used in this study to ...". or "what type of treatment is assessed in this study?" (where the study name is not specifified).
+If the question contains acronyms that are not well known, then explain the acronym.
+
+--------
+EXAMPLE CATEGORIES 
+Below are sample categories with sample questions. 
+
+Category: 1 - Genetic inheritance & disease-linked mutations
+question: What gene is mutated in Sickle Cell Anemia?
+answer: HBB
+question: Which ultraconserved element is associated with Embryonic Stem Cells (ESC) self-renewal?
+answer: T-UCstem1
+question: Is Huntington's disease caused by a dominate or recessive gene?
+answer: dominant
+
+Category: 2 - Therapeutics, indications & clinical evidence
+question: What is the most effective drug for oxaliplatin-induced neuropathy?
+answer: Duloxetine
+question: Which cancer is the BCG vaccine used for?
+answer: Non-muscle Invasive Bladder Cancer
+question: How many injections of CLS-TA did the patients participating in the PEACHTREE trial receive?
+answer: two
+
+Category: 3 - Protein function, localization & signalling/enzymatic interactions
+question: Which histone mark distinguishes active from inactive enhancers?
+answer: H3K27ac
+question: Which component of the Influenza A Virus affects mRNA transcription termination?
+answer: NS1
+question: Which is the main calcium binding protein of the sarcoplasmic reticulum?
+answer: Calsequestrin
+
+Category: 4 - Experimental & computational methods, resources & acronyms
+question: Which algorithm has been proposed for efficient storage of WGS variant calls?
+answer: SeqArray
+question: What is an acceptable sequence coverage(depth) required for human whole-exome sequencing?
+answer: 30x-60x
+
+Category: 5 - Disease causation & pathogens
+question: Which is the most common disease attributed to malfunction or absence of primary cilia?
+answer: ['Polycystic kidney disease', 'PKD']
+question: What organism causes scarlet fever also known as scarletina?
+answer: ['Group A Streptococcus', 'Streptococcus pyogenes']
+question: The pathogen Fusarium graminearum affects what type of plant species?
+answer: cereal crops
+
+Category: 6 - Biomarkers & diagnostic tests
+question: Salivary Cortisol is a biomarker for what disease/syndrome/condition?
+answer: stress
+question: What is the gold standard for a diagnosis of narcolepsy?
+answer: ['Sleep study', 'overnight polysomnography']
+
+Category: 7 - Bioinformatics databases & curated resources
+question: Which R/bioconductor package has been developed to aid in epigenomic analysis?
+answer: DeepBlueR
+question: Which database associates human noncoding SNPs with their three-dimensional interacting genes?
+answer: 3DSNP
+question: What is the RESID database?
+question: Which is the literature-based database of phenotypes?
+answer: PheneBank
+
+Category: 8 - Clinical grading & diagnostic scales / classification systems
+question: What can be predicted with the Wells criteria?
+answer: pulmonary embolism
+question: Symptoms of which disorder are evaluated with the Davidson Trauma Scale?
+answer: ['post-traumatic stress disorder', 'PTSD']
+question: Which value of nuchal translucency thickness is set as the threshold for high-risk for Down Syndrome?
+answer: 3mm
+
+Category: 9 - Anatomical / cellular structures & localisation
+question: Where is corticosterone synthesized?
+answer: Adrenal glands
+question: Which is the chromosome area that the human gene coding for the dopamine transporter (DAT1) is located to?
+answer: 5p15.3
+question: Where is the respirasome located?
+answer: inner mitochondrial membrane
+
+Category: 10 - Psychology and behavioral health
+Question: Which psychomotor domain showed a significant difference between institutionalized and non-institutionalized sheltered children and adolescents?
+Answer: Body awareness
+Question: What ethical principle justifies actions that have both good and harmful effects, as long as the harm is not intended but only foreseen?
+Answer: Rule of Double Effect
+Questions: What psychological process during an incubation period is associated with enhanced creative problem solving?
+Answer: Mind-wandering
+
+--------
+
+OUTPUT FORMAT
+Return question inside tag `<question>...</question>`, answer inside `<answer>...</answer>`. 
+If the QA corresponde to one of the above categories put its number in <cat_num>...</cat_num> and category description in <cat>...</cat>
+
+--------
+TITLE AND ABSTRACT
+{title_abstract}
+"""
+
 # Golden answers template
 GOLDEN_ANSWERS_TEMPLATE = """I am generating a dataset for biological question answering.
 Below I'll give a question with its target answer.
@@ -166,7 +282,7 @@ ANSWER
 {answer}"""
 
 # Template mapping
-TEMPLATES = {1: TEMPLATE_1}
+TEMPLATES = {1: TEMPLATE_1, 2: TEMPLATE_2}
 
 
 def parse_llm_response(response: str) -> Dict[str, str]:
@@ -351,6 +467,67 @@ def create_and_push_dataset(qa_pairs: List[Dict],
     print(
         f"Creating dataset with {len(qa_pairs)} examples, test size: {n_test}")
 
+    # Convert to DataFrame first to check for mixed types
+    df = pd.DataFrame(qa_pairs)
+
+    # Filter and fix golden_answers column
+    if 'golden_answers' in df.columns:
+        original_length = len(df)
+
+        def fix_golden_answers(x):
+            """Fix golden_answers by flattening nested lists and filtering non-lists"""
+            if not isinstance(x, list):
+                return None  # Mark for removal
+
+            # Flatten nested lists
+            flattened = []
+            for item in x:
+                if isinstance(item, list):
+                    flattened.extend(item)  # Flatten nested list
+                else:
+                    flattened.append(item)  # Keep single item
+
+            return flattened
+
+        # Apply the fix function
+        df['golden_answers_fixed'] = df['golden_answers'].apply(
+            fix_golden_answers)
+
+        # Count how many needed flattening vs removal
+        non_list_count = df['golden_answers_fixed'].isnull().sum()
+        flattened_count = 0
+
+        # Count rows that needed flattening (had nested lists)
+        for i, (original, fixed) in enumerate(
+                zip(df['golden_answers'], df['golden_answers_fixed'])):
+            if fixed is not None and isinstance(original, list):
+                # Check if any item in original was a list
+                if any(isinstance(item, list) for item in original):
+                    flattened_count += 1
+
+        # Remove rows where golden_answers couldn't be fixed (weren't lists)
+        df = df[df['golden_answers_fixed'].notnull()]
+
+        # Replace the original column with the fixed one
+        df['golden_answers'] = df['golden_answers_fixed']
+        df = df.drop('golden_answers_fixed', axis=1)
+
+        print(
+            f"Filtered out {non_list_count} rows where golden_answers was not a list"
+        )
+        print(
+            f"Flattened {flattened_count} rows where golden_answers contained nested lists"
+        )
+        print(
+            f"Original dataset size: {original_length}, Filtered dataset size: {len(df)}"
+        )
+
+        # Set breakpoint as requested
+        ipdb.set_trace()
+
+        # Convert back to list of dictionaries
+        qa_pairs = df.to_dict('records')
+
     # Split into train and test (last n_test examples as test)
     if len(qa_pairs) > n_test:
         train_data = qa_pairs[:-n_test]
@@ -383,6 +560,34 @@ def create_and_push_dataset(qa_pairs: List[Dict],
     dataset.push_to_hub(hub_name)
 
     return dataset
+
+
+def filter_this_study_answers(qa_pairs: List[Dict]) -> List[Dict]:
+    """
+    Filter out Q&A pairs where the answer contains 'this study' (case insensitive).
+    Returns filtered list and prints how many were removed.
+    """
+    original_count = len(qa_pairs)
+
+    # Filter out pairs where answer contains "this study" (case insensitive)
+    filtered_pairs = []
+    removed_count = 0
+
+    for qa in qa_pairs:
+        answer = qa.get('answer', '')
+        if isinstance(answer, str) and 'this study' in answer.lower():
+            removed_count += 1
+        else:
+            filtered_pairs.append(qa)
+
+    print(
+        f"Filtered out {removed_count} Q&A pairs containing 'this study' in the answer"
+    )
+    print(
+        f"Remaining pairs: {len(filtered_pairs)} (originally {original_count})"
+    )
+
+    return filtered_pairs
 
 
 def generate_dataset_from_abstracts(key: int = 1,
@@ -462,6 +667,9 @@ def generate_dataset_from_abstracts(key: int = 1,
         print(f"Initial Q&A results saved to {output_file}")
         print(f"Generated {len(all_results)} Q&A pairs")
 
+        # Filter out answers containing "this study"
+        all_results = filter_this_study_answers(all_results)
+
         # Generate golden answers
         all_results_with_golden = generate_golden_answers(all_results)
 
@@ -486,6 +694,38 @@ def generate_dataset_from_abstracts(key: int = 1,
                                           hub_name=hub_name)
         print(f"Dataset pushed to HuggingFace Hub: {hub_name}")
 
+        # Check data types for each column
+        print("Column data types:")
+        print(df_final.dtypes)
+
+        # Check for mixed types in each column
+        print("\nChecking for mixed types in each column:")
+        for col in df_final.columns:
+            unique_types = df_final[col].apply(
+                lambda x: type(x).__name__).unique()
+            if len(unique_types) > 1:
+                print(f"Column '{col}' has mixed types: {unique_types}")
+                # Show some examples
+                print("  Examples:")
+                for utype in unique_types:
+                    example = df_final[df_final[col].apply(
+                        lambda x: type(x).__name__ == utype)][col].iloc[0]
+                    print(f"    {utype}: {repr(example)}")
+                print()
+
+        # Check specifically for the golden_answers column (most likely culprit)
+        if 'golden_answers' in df_final.columns:
+            print(f"\nDetailed check for 'golden_answers' column:")
+            ga_types = df_final['golden_answers'].apply(
+                lambda x: type(x).__name__)
+            print(f"Types found: {ga_types.value_counts()}")
+
+            # Show examples of each type
+            for type_name in ga_types.unique():
+                example_idx = ga_types[ga_types == type_name].index[0]
+                example_value = df_final.loc[example_idx, 'golden_answers']
+                print(f"  {type_name} example: {repr(example_value)}")
+
     else:
         print("No results generated")
 
@@ -494,8 +734,12 @@ def generate_dataset_from_abstracts(key: int = 1,
 
 if __name__ == "__main__":
     # You can modify these parameters or add command line argument parsing
-    generate_dataset_from_abstracts(
-        key=1,
-        n_samples=1700,
-        n_test=200,
-        hub_name="jmhb/PaperSearchRL_v0_n1500_test200")
+    n_samples = 1000
+    n_test = 500
+    key = 2
+    hub_name = f"jmhb/PaperSearchRL_v{key}_n{n_samples}_test{n_test}"
+    print(f"generating dataset with hub_name: {hub_name}")
+    generate_dataset_from_abstracts(key=key,
+                                    n_samples=n_samples,
+                                    n_test=n_test,
+                                    hub_name=hub_name)
