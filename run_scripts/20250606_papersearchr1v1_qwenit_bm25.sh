@@ -261,5 +261,4 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     max_turns=2 \
     retriever.url=$RETRIEVER_URL \
     retriever.topk=3 \
-    retriever.name=$retriever_name \
     2>&1 | tee data/${EXPERIMENT_NAME}.log
