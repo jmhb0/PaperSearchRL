@@ -46,7 +46,7 @@ else
     echo "Model already cached, skipping download"
 fi
 
-DATA_SOURCE=- 20250608_PaperSearchRL_v4_gv2_n3000_test500_parav1pcnt50_filterk1_e5.sh
+DATA_SOURCE=jmhb/PaperSearchRL_v4_gv2_n3000_test500_parav1pcnt50_filterk1
 corpus_file=data/pubmed.jsonl
 retriever_name=e5
 # retriever_name=bm25
