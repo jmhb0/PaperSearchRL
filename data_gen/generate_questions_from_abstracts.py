@@ -7,8 +7,6 @@ PREREQUISITES:
     1. Run: python data_gen/allMesh_to_parquet.py
     2. This will create the required file: data/allMeSH_2022.parquet
 
-Usage:
-    python -m ipdb data_gen/generate_questions_from_abstracts.py
 
 This script:
 1. Loads PubMed abstracts from the parquet database
@@ -22,13 +20,13 @@ import os
 import pandas as pd
 import numpy as np
 import csv
-import ipdb
 from typing import List, Dict, Any
 import random
 import json
 from tqdm import tqdm
 import re
 from datasets import Dataset, DatasetDict
+import ipdb
 
 from data_gen.allMesh_to_parquet import return_indexer
 from data_gen.api import call_llm, call_llm_batch
@@ -479,8 +477,7 @@ For **each** entity, return **every widely used synonym, alias, abbreviation, sp
 
 OUTPUT  
 Return **valid JSON only**.  
-If there is **one entity**, output a flat list.  
-If there are **multiple entities**, output an object whose keys are the original entity strings and whose values are the synonym lists.
+Return a flat list of strings.
 
 EXAMPLES  
 • Input answer: `c-Jun NH2-terminal kinase`  
@@ -777,47 +774,35 @@ def generate_golden_answers(qa_pairs: List[Dict],
         # Call LLM for the entire batch
         try:
             responses, _ = call_llm_batch(prompts=prompts,
-                                          model_name="openai/gpt-4.1",
+                                          model_name="openai/gpt-4-turbo",
                                           max_tokens=500,
                                           temperature=0.3,
-                                          use_cache=True)
+                                          max_concurrent=50,
+                                          use_cache=True,
+                                          json_mode=True)
 
             # Process each response in the batch
-            for qa, response in zip(batch, responses):
-                # Create a copy of the QA pair to avoid modifying original
+            for qa, golden_answers in zip(batch, responses):
                 updated_qa = qa.copy()
-
                 try:
-                    # Try to parse the JSON response
-                    response_clean = response.strip()
-                    golden_answers = json.loads(response_clean)
-
-                    # Validate that it's a list
-                    if isinstance(golden_answers,
-                                  list) and len(golden_answers) > 0:
+                    golden_answers = json.loads(golden_answers)
+                    # With json_mode=True, `call_llm_batch` should return parsed JSON objects.
+                    # We validate that we got a non-empty list or dictionary.
+                    if (isinstance(golden_answers,
+                                   (list, dict))) and golden_answers:
                         updated_qa['golden_answers'] = golden_answers
                     else:
-                        # Fallback to original answer
+                        # Fallback to original answer if response is empty or wrong type
                         updated_qa['golden_answers'] = [qa['answer']]
                         print(
                             f"Warning: Empty or invalid golden_answers format for question: {qa['question'][:50]}..."
                         )
-
-                except json.JSONDecodeError as e:
-                    # Fallback to original answer if JSON parsing fails
-                    updated_qa['golden_answers'] = [qa['answer']]
-                    print(
-                        f"Warning: JSON decode error for question: {qa['question'][:50]}... Error: {e}"
-                    )
-                    print(f"Raw response: {response[:100]}...")
-
                 except Exception as e:
-                    # Catch any other parsing errors
+                    # Fallback for any unexpected error during processing of a single response
                     updated_qa['golden_answers'] = [qa['answer']]
                     print(
-                        f"Warning: Unexpected error parsing golden_answers for question: {qa['question'][:50]}... Error: {e}"
+                        f"Warning: Unexpected error processing golden_answers for question: {qa['question'][:50]}... Error: {e}"
                     )
-
                 updated_qa_pairs.append(updated_qa)
 
         except Exception as e:
@@ -941,7 +926,7 @@ def create_and_push_dataset(qa_pairs: List[Dict],
 
         def fix_golden_answers(x):
             """Fix golden_answers by flattening nested lists and filtering non-lists"""
-            if not isinstance(x, list):
+            if not isinstance(x, dict):
                 return None  # Mark for removal
 
             # Flatten nested lists
@@ -987,7 +972,6 @@ def create_and_push_dataset(qa_pairs: List[Dict],
             f"Original dataset size: {original_length}, Filtered dataset size: {len(df)}"
         )
 
-        # Set breakpoint as requested
         ipdb.set_trace()
 
         # Convert back to list of dictionaries
@@ -1218,8 +1202,8 @@ def generate_dataset_from_abstracts(key: int = 1,
 
 if __name__ == "__main__":
     # You can modify these parameters or add command line argument parsing
-    n_samples = 500
-    n_test = 250
+    n_samples = 3000
+    n_test = 500
     key = 4
     golden_key = 2
     do_paraphrase = True

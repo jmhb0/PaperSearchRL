@@ -11,6 +11,7 @@ import json
 import argparse
 import lmdb
 import atexit
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass, asdict
 import pandas as pd
@@ -23,6 +24,8 @@ import requests
 from verl.utils.reward_score.qa_em import compute_score_em
 import re
 import ipdb
+from eval.infer_searchr1 import BatchSearchR1
+from filelock import FileLock
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,6 +73,8 @@ class InferenceCache:
         """Initialize the cache with LMDB."""
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_path = os.path.join(cache_dir, "inference_cache.lmdb")
+        self.lock_path = self.cache_path + ".lock"
+        self.lock = FileLock(self.lock_path)
         self.env = lmdb.open(self.cache_path,
                              map_size=1024 * 1024 * 1024)  # 1GB max
 
@@ -103,8 +108,9 @@ class InferenceCache:
         """Cache the result."""
         key = self._generate_key(config, input_data)
 
-        with self.env.begin(write=True) as txn:
-            txn.put(key.encode(), result.encode())
+        with self.lock:
+            with self.env.begin(write=True) as txn:
+                txn.put(key.encode(), result.encode())
 
     def close(self):
         """Close the LMDB environment."""
@@ -562,6 +568,73 @@ class InferenceEngine:
 
         return prediction
 
+    def searchr1_inference_batch(
+            self,
+            questions: List[str],
+            contexts: List[str] = None) -> List[Tuple[str, str]]:
+        """Batch SearchR1 inference using BatchSearchR1 class"""
+
+        if self.searchr1_model is None or self.searchr1_tokenizer is None:
+            raise RuntimeError("SearchR1 model not loaded properly")
+
+        if contexts is None:
+            contexts = [""] * len(questions)
+
+        # Check cache first
+        results = []
+        uncached_indices = []
+        uncached_questions = []
+
+        for i, question in enumerate(questions):
+            cache_key = f"searchr1:{question}|"
+            if self.config.use_cache and not self.config.overwrite_cache:
+                cached_result = _inference_cache.get(self.config, cache_key)
+                if cached_result:
+                    prediction = self._extract_prediction(cached_result,
+                                                          method="searchr1")
+                    results.append((cached_result, prediction))
+                    continue
+
+            uncached_indices.append(i)
+            uncached_questions.append(question)
+            results.append(None)  # Placeholder
+
+        # Process uncached questions using BatchSearchR1
+        if uncached_questions:
+            print(
+                f"Running batch SearchR1 for {len(uncached_questions)} uncached questions..."
+            )
+
+            batch_searchr1 = BatchSearchR1(
+                model=self.searchr1_model,
+                tokenizer=self.searchr1_tokenizer,
+                search_url="http://127.0.0.1:8000/retrieve",
+                topk=3)
+
+            responses, predictions = batch_searchr1.run_batch_searchr1(
+                uncached_questions)
+
+            # Fill in results and cache
+            for idx, response, prediction in zip(uncached_indices, responses,
+                                                 predictions):
+                results[idx] = (response, prediction)
+
+                # Cache the result
+                if self.config.use_cache or self.config.overwrite_cache:
+                    question = questions[idx]
+                    cache_key = f"searchr1:{question}|"
+                    _inference_cache.set(self.config, cache_key, response)
+
+        return results
+
+    def papersearchr1_inference_batch(
+            self,
+            questions: List[str],
+            contexts: List[str] = None) -> List[Tuple[str, str]]:
+        """Same as searchr1_inference_batch but for PaperSearchR1"""
+        # Implementation is identical since both use the same model interface
+        return self.searchr1_inference_batch(questions, contexts)
+
 
 def llm_judge_batch(questions: List[str],
                     ground_truths: List[str],
@@ -613,15 +686,14 @@ Respond in JSON format:
         judge_prompts.append(judge_prompt)
 
     try:
-        # Use batch processing from api.py
-        responses, _ = call_llm_batch(
-            prompts=judge_prompts,
-            model_name=judge_model,
-            max_tokens=500,
-            temperature=0.1,
-            json_mode=True,
-            max_concurrent=10  # Limit concurrent requests
-        )
+        # Use asyncio.run to call the async batch function from this sync context
+        responses, _ = asyncio.run(
+            call_llm_batch(prompts=judge_prompts,
+                           model_name=judge_model,
+                           max_tokens=500,
+                           temperature=0.1,
+                           json_mode=True,
+                           max_concurrent=10))
 
         # Parse responses
         judgments = []
@@ -851,6 +923,8 @@ def run_inference(config: InferenceConfig,
             em_score = compute_score_em(pred_str, clean_gold_list)
             em_scores.append(em_score)
 
+        results_df['em_score'] = em_scores
+
         # Calculate average EM score
         avg_em_score = np.mean(em_scores)
         print(f"Average Exact Match Score: {avg_em_score:.3f}")
@@ -1014,4 +1088,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nScript interrupted by user. Exiting gracefully.")

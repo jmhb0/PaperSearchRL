@@ -14,7 +14,8 @@ from typing import List, Optional, Dict, Any, Union, Tuple
 import lmdb
 import httpx
 from PIL import Image
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
+from filelock import FileLock
 
 
 class LLMCache:
@@ -24,6 +25,8 @@ class LLMCache:
         """Initialize the cache with LMDB."""
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_path = os.path.join(cache_dir, "llm_cache.lmdb")
+        self.lock_path = self.cache_path + ".lock"
+        self.lock = FileLock(self.lock_path)
         self.env = lmdb.open(self.cache_path,
                              map_size=1024 * 1024 * 1024)  # 1GB max
 
@@ -96,8 +99,9 @@ class LLMCache:
         # Store as JSON with both response and cost
         cache_data = {"response": response, "cost": cost}
 
-        with self.env.begin(write=True) as txn:
-            txn.put(key.encode(), json.dumps(cache_data).encode())
+        with self.lock:
+            with self.env.begin(write=True) as txn:
+                txn.put(key.encode(), json.dumps(cache_data).encode())
 
     def close(self):
         """Close the LMDB environment."""
@@ -133,6 +137,7 @@ def call_llm(text: str,
              json_mode: bool = False) -> Tuple[str, Optional[float]]:
     """
     Call an LLM through OpenRouter API with optional image inputs and caching.
+    This is a synchronous function that uses asyncio internally for non-blocking I/O.
     
     Args:
         text: The text prompt to send to the LLM
@@ -178,96 +183,156 @@ def call_llm(text: str,
     # If we reach here, it's either a cache miss or cache is disabled
     print("✗", end="", flush=True)  # Cache miss indicator
 
-    # Initialize OpenAI client with OpenRouter endpoint
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-        timeout=30.0,
-        max_retries=2,
-        http_client=httpx.Client(
-            verify=False)  # Disable SSL verification to fix certificate issues
-    )
+    async def _async_call():
+        # Initialize OpenAI client with OpenRouter endpoint
+        client = AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            timeout=30.0,
+            max_retries=2,
+            http_client=httpx.AsyncClient(
+                verify=False
+            )  # Disable SSL verification to fix certificate issues
+        )
 
-    # Prepare the message content
-    message_content = [{"type": "text", "text": text}]
+        # Prepare the message content
+        message_content = [{"type": "text", "text": text}]
 
-    # Add images if provided
-    for image in images:
-        image_b64 = _encode_image_to_base64(image)
-        message_content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": image_b64
-            }
-        })
+        # Add images if provided
+        for image in images:
+            image_b64 = _encode_image_to_base64(image)
+            message_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": image_b64
+                }
+            })
 
-    # Prepare request parameters
-    request_params = {
-        "model": model_name,
-        "messages": [{
-            "role": "user",
-            "content": message_content
-        }],
-        "max_tokens": max_tokens,
-        "temperature": temperature
-    }
+        # Prepare request parameters
+        request_params = {
+            "model": model_name,
+            "messages": [{
+                "role": "user",
+                "content": message_content
+            }],
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
 
-    # Add JSON mode for GPT models if requested
-    if json_mode and model_name.startswith("openai/gpt"):
-        request_params["response_format"] = {"type": "json_object"}
+        # Add JSON mode for GPT models if requested
+        if json_mode and model_name.startswith("openai/gpt"):
+            request_params["response_format"] = {"type": "json_object"}
 
-    try:
-        if include_cost:
-            # Make direct HTTP request when cost tracking is needed
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/jmhb/PaperSearch-rl",
-                "X-Title": "PaperSearch-RL"
-            }
+        try:
+            if include_cost:
+                # Make direct HTTP request when cost tracking is needed
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/jmhb/PaperSearch-rl",
+                    "X-Title": "PaperSearch-RL"
+                }
 
-            # Add usage parameter for cost tracking
-            request_params["usage"] = {"include": True}
+                # Add usage parameter for cost tracking
+                request_params["usage"] = {"include": True}
 
-            with httpx.Client(verify=False, timeout=30.0) as http_client:
-                http_response = http_client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers,
-                    json=request_params)
+                async with httpx.AsyncClient(verify=False,
+                                             timeout=30.0) as http_client:
+                    http_response = await http_client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        json=request_params)
 
-                if http_response.status_code != 200:
-                    raise Exception(
-                        f"HTTP {http_response.status_code}: {http_response.text}"
-                    )
+                    if http_response.status_code != 200:
+                        raise Exception(
+                            f"HTTP {http_response.status_code}: {http_response.text}"
+                        )
 
-                response_data = http_response.json()
-                response_text = response_data["choices"][0]["message"][
-                    "content"]
-                cost = response_data.get("usage", {}).get("cost", 0.0)
+                    response_data = http_response.json()
+                    response_text = response_data["choices"][0]["message"][
+                        "content"]
+                    cost = response_data.get("usage", {}).get("cost", 0.0)
 
-                # Cache the response with cost
+                    # Cache the response with cost
+                    if use_cache and response_text:
+                        _cache.set(text, images, model_name, max_tokens,
+                                   temperature, response_text, cost)
+
+                    return response_text, cost
+            else:
+                # Use OpenAI client for regular requests (without cost tracking)
+                response = await client.chat.completions.create(
+                    **request_params)
+                response_text = response.choices[0].message.content
+
+                # Cache the response with cost (0.0 for non-cost requests)
                 if use_cache and response_text:
                     _cache.set(text, images, model_name, max_tokens,
-                               temperature, response_text, cost)
+                               temperature, response_text, 0.0)
 
-                return response_text, cost
-        else:
-            # Use OpenAI client for regular requests (without cost tracking)
-            response = client.chat.completions.create(**request_params)
-            response_text = response.choices[0].message.content
+                if include_cost:
+                    return response_text, 0.0
+                else:
+                    return response_text, None
 
-            # Cache the response with cost (0.0 for non-cost requests)
-            if use_cache and response_text:
-                _cache.set(text, images, model_name, max_tokens, temperature,
-                           response_text, 0.0)
+        except Exception as e:
+            raise Exception(f"API call failed: {str(e)}")
 
+    # Run the internal async function from the synchronous wrapper
+    try:
+        return asyncio.run(_async_call())
+    except KeyboardInterrupt:
+        print("\nAPI call interrupted by user.")
+        return "[ERROR: Interrupted]", None
+
+
+async def _async_call_llm_batch_processor(prompts, images_list, model_name,
+                                          provider, use_cache, max_tokens,
+                                          temperature, max_concurrent,
+                                          include_cost, json_mode):
+    """The core async logic for batch processing."""
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _call_single(prompt, images):
+        async with semaphore:
+            try:
+                # This needs to be a non-async call to the wrapper `call_llm`
+                # which handles its own event loop via asyncio.run
+                # To avoid loop-in-loop, we run it in a thread.
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, call_llm, prompt,
+                                                    images, model_name,
+                                                    provider, use_cache,
+                                                    max_tokens, temperature,
+                                                    include_cost, json_mode)
+                return result
+            except Exception as e:
+                return e
+
+    tasks = [
+        _call_single(prompt, images)
+        for prompt, images in zip(prompts, images_list)
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    processed_results = []
+    processed_costs = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            error_msg = f"Error for prompt {i}: {str(result)}"
+            print(f"⚠️  {error_msg}")
+            processed_results.append(f"[ERROR: {str(result)}]")
             if include_cost:
-                return response_text, 0.0
-            else:
-                return response_text, None
+                processed_costs.append(0.0)
+        else:
+            response_text, cost = result
+            processed_results.append(response_text)
+            if include_cost:
+                processed_costs.append(cost if cost is not None else 0.0)
 
-    except Exception as e:
-        raise Exception(f"API call failed: {str(e)}")
+    if include_cost:
+        return processed_results, processed_costs
+    return processed_results, None
 
 
 def call_llm_batch(
@@ -283,6 +348,8 @@ def call_llm_batch(
         json_mode: bool = False) -> Tuple[List[str], Optional[List[float]]]:
     """
     Call LLM with multiple prompts concurrently using the existing call_llm function.
+    This function is synchronous from the outside, but uses asyncio internally
+    for concurrent, interruptible execution.
     
     Args:
         prompts: List of text prompts to send to the LLM
@@ -306,7 +373,7 @@ def call_llm_batch(
     if not prompts:
         if include_cost:
             return [], []
-        return []
+        return [], None
 
     # Validate and normalize inputs
     if images_list is None:
@@ -314,67 +381,21 @@ def call_llm_batch(
     elif len(images_list) != len(prompts):
         raise ValueError("images_list must have the same length as prompts")
 
-    async def _batch_process():
-        # Create semaphore to limit concurrent requests
-        semaphore = asyncio.Semaphore(max_concurrent)
-
-        async def _call_single(
-                prompt: str,
-                images: List[Image.Image]) -> Tuple[str, Optional[float]]:
-            """Async wrapper around the sync call_llm function."""
-            async with semaphore:  # Limit concurrent requests
-                try:
-                    # Run the sync call_llm in a thread pool
-                    result = await asyncio.to_thread(call_llm,
-                                                     text=prompt,
-                                                     images=images,
-                                                     model_name=model_name,
-                                                     provider=provider,
-                                                     use_cache=use_cache,
-                                                     max_tokens=max_tokens,
-                                                     temperature=temperature,
-                                                     include_cost=include_cost,
-                                                     json_mode=json_mode)
-                    return result
-                except Exception as e:
-                    raise Exception(
-                        f"API call failed for prompt '{prompt[:50]}...': {str(e)}"
-                    )
-
-        # Create tasks for all prompts
-        tasks = [
-            _call_single(prompt, images)
-            for prompt, images in zip(prompts, images_list)
-        ]
-
-        # Execute all tasks concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Process results and handle exceptions
-        processed_results = []
-        processed_costs = []
-
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                error_msg = f"Error for prompt {i}: {str(result)}"
-                print(f"⚠️  {error_msg}")
-                processed_results.append(f"[ERROR: {str(result)}]")
-                if include_cost:
-                    processed_costs.append(0.0)
-            else:
-                # call_llm now always returns a tuple (response, cost)
-                response_text, cost = result
-                processed_results.append(response_text)
-                if include_cost:
-                    processed_costs.append(cost if cost is not None else 0.0)
-
-        if include_cost:
-            return processed_results, processed_costs
-        return processed_results, None
-
-    # Run the async batch process
+    # Run the async batch process from the sync function.
+    # asyncio.run handles the event loop and graceful shutdown on Ctrl+C.
     try:
-        return asyncio.run(_batch_process())
+        return asyncio.run(
+            _async_call_llm_batch_processor(prompts, images_list, model_name,
+                                            provider, use_cache, max_tokens,
+                                            temperature, max_concurrent,
+                                            include_cost, json_mode))
+    except KeyboardInterrupt:
+        # Intercept the KeyboardInterrupt from asyncio.run to provide a clear message.
+        print("\n🚫 Batch processing interrupted by user. Shutting down.")
+        # Return empty lists to signal partial/interrupted completion.
+        if include_cost:
+            return [], []
+        return [], None
     except Exception as e:
         raise Exception(f"Batch processing failed: {str(e)}")
 
@@ -536,12 +557,17 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     test_cost_tracking()
 
+    # Example of a single call
     response, cost = call_llm("What is the capital of France?",
                               include_cost=True)
-    print(f"Response: {response}")
-    print(f"Cost: ${cost:.8f} USD")
+    print(f"\nResponse: {response}")
+    if cost is not None:
+        print(f"Cost: ${cost:.8f} USD")
 
+    # Example of a batch call
     responses, costs = call_llm_batch(
         prompts=["What is 2+2?", "Name a color."], include_cost=True)
-    total_cost = sum(costs)
-    print(f"Total cost: ${total_cost:.8f} USD")
+    if costs:
+        total_cost = sum(costs)
+        print(f"\nTotal cost for batch: ${total_cost:.8f} USD")
+        print("Batch responses:", responses)
