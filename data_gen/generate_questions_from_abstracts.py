@@ -1,4 +1,5 @@
 """
+python -m ipdb data_gen/generate_questions_from_abstracts.py
 Script to generate question-answer datasets from PubMed abstracts using GPT.
 
 PREREQUISITES:
@@ -256,8 +257,189 @@ TITLE AND ABSTRACT
 {title_abstract}
 """
 
+TEMPLATE_3 = """
+BACKGROUND
+You are a domain-expert biomedical NLP assistant.
+You are helping me to create an open-domain QA dataset. 
+The downstream task will read a query and require an agent to search over Pubmed abstracts
+
+--------
+YOUR TASK 
+I will provide you with title and abstract of a Pubmed article. 
+Your task is to create 3 new question-answer pairs. 
+
+--------
+TYPES OF QUESTIONS
+The questions should be 'factoid based'. 
+The answer should be a simple entity. 
+It should not be ambiguous.
+Don't be pretentious. 
+
+--------
+IMPORTANT NOTES
+The question-answer pair will be used to evaluation question-answering systems with retrieval. Ths means the target system does not know which paper the question was sourced from. So an inappropriate question would be "What technology is used in this study to ...". or "what type of treatment is assessed in this study?" (where the study name is not specifified).
+If the question contains acronyms that are not well known, then explain the acronym.
+
+--------
+EXAMPLE CATEGORIES 
+Below are sample categories with sample questions. 
+
+Category: 1 - Genetic inheritance & disease-linked mutations
+question: What gene is mutated in Sickle Cell Anemia?
+answer: HBB
+question: Which ultraconserved element is associated with Embryonic Stem Cells (ESC) self-renewal?
+answer: T-UCstem1
+question: Is Huntington's disease caused by a dominate or recessive gene?
+answer: dominant
+
+Category: 2 - Therapeutics, indications & clinical evidence
+question: What is the most effective drug for oxaliplatin-induced neuropathy?
+answer: Duloxetine
+question: Which cancer is the BCG vaccine used for?
+answer: Non-muscle Invasive Bladder Cancer
+question: How many injections of CLS-TA did the patients participating in the PEACHTREE trial receive?
+answer: two
+
+Category: 3 - Protein function, localization & signalling/enzymatic interactions
+question: Which histone mark distinguishes active from inactive enhancers?
+answer: H3K27ac
+question: Which component of the Influenza A Virus affects mRNA transcription termination?
+answer: NS1
+question: Which is the main calcium binding protein of the sarcoplasmic reticulum?
+answer: Calsequestrin
+
+Category: 4 - Experimental & computational methods, resources & acronyms
+question: Which algorithm has been proposed for efficient storage of WGS variant calls?
+answer: SeqArray
+question: What is an acceptable sequence coverage(depth) required for human whole-exome sequencing?
+answer: 30x-60x
+
+Category: 5 - Disease causation & pathogens
+question: Which is the most common disease attributed to malfunction or absence of primary cilia?
+answer: ['Polycystic kidney disease', 'PKD']
+question: What organism causes scarlet fever also known as scarletina?
+answer: ['Group A Streptococcus', 'Streptococcus pyogenes']
+question: The pathogen Fusarium graminearum affects what type of plant species?
+answer: cereal crops
+
+Category: 6 - Biomarkers & diagnostic tests
+question: Salivary Cortisol is a biomarker for what disease/syndrome/condition?
+answer: stress
+question: What is the gold standard for a diagnosis of narcolepsy?
+answer: ['Sleep study', 'overnight polysomnography']
+
+Category: 7 - Bioinformatics databases & curated resources
+question: Which R/bioconductor package has been developed to aid in epigenomic analysis?
+answer: DeepBlueR
+question: Which database associates human noncoding SNPs with their three-dimensional interacting genes?
+answer: 3DSNP
+question: What is the RESID database?
+question: Which is the literature-based database of phenotypes?
+answer: PheneBank
+
+Category: 8 - Clinical grading & diagnostic scales / classification systems
+question: What can be predicted with the Wells criteria?
+answer: pulmonary embolism
+question: Symptoms of which disorder are evaluated with the Davidson Trauma Scale?
+answer: ['post-traumatic stress disorder', 'PTSD']
+question: Which value of nuchal translucency thickness is set as the threshold for high-risk for Down Syndrome?
+answer: 3mm
+
+Category: 9 - Anatomical / cellular structures & localisation
+question: Where is corticosterone synthesized?
+answer: Adrenal glands
+question: Which is the chromosome area that the human gene coding for the dopamine transporter (DAT1) is located to?
+answer: 5p15.3
+question: Where is the respirasome located?
+answer: inner mitochondrial membrane
+
+Category: 10 - Psychology and behavioral health
+Question: Which psychomotor domain showed a significant difference between institutionalized and non-institutionalized sheltered children and adolescents?
+Answer: Body awareness
+Question: What ethical principle justifies actions that have both good and harmful effects, as long as the harm is not intended but only foreseen?
+Answer: Rule of Double Effect
+Questions: What psychological process during an incubation period is associated with enhanced creative problem solving?
+Answer: Mind-wandering
+
+--------
+
+OUTPUT FORMAT
+A single QA has tags `<question>...</question>`, answer inside `<answer>...</answer>`. 
+If the QA corresponds to one of the above categories put its number in <cat_num>...</cat_num> and category description in <cat>...</cat>. 
+Each QA should exist in its own tag <qa>...</qa>
+
+Therefore the first 2 questions would be:
+<qas>
+   <qa> <question> ... </question>
+      <answer> ... </answer>
+      <cat_num> ... </cat_num>
+      <cat> ... </cat>
+   </qa>
+   <qa> 
+       .....
+   </qa>
+   ...
+</qas>
+
+--------
+TITLE AND ABSTRACT
+{title_abstract}
+"""
+
+TEMPLATE_4 = """
+BACKGROUND  
+You are a domain-expert biomedical NLP assistant helping to build an open-domain factoid QA set.  
+At evaluation time, the QA system will NOT see the source article—only PubMed as a whole.
+
+INPUT  
+You receive one PubMed article (title + abstract).
+
+TASK  
+Produce **3** new question–answer pairs that meet all guidelines below.
+
+GUIDELINES  
+1. **Factoid only** – the answer is a single, unambiguous biomedical entity (gene, drug, disease, method, etc.).  
+2. **Independence** – word questions so they do *not* rely on the given article being visible.  
+   *Avoid phrases like "in this study", "according to the article", or any hint that a specific paper is required.*  
+3. **Knowledge scope** – choose facts that are (a) stated in the abstract **and** (b) well supported elsewhere in PubMed, so retrieval is feasible.  
+4. **Acronyms** – spell out uncommon acronyms on first mention, e.g. "extracorporeal membrane oxygenation (ECMO)".  
+5. **Tone** – clear, direct, non-pretentious.  
+6. **Category tag** – if the QA fits one of the 10 categories below, include that number and label; otherwise use 0 / "Other".
+
+CATEGORIES  
+1 Genetic mutations 2 Therapeutics & clinical evidence 3 Protein function & signalling  
+4 Methods & resources 5 Disease causation & pathogens 6 Biomarkers & diagnostics  
+7 Bioinformatics databases 8 Clinical scales & classifications  
+9 Anatomy & cellular localisation 10 Psychology & behavioural health
+
+OUTPUT  
+Return exactly:
+
+<qas>  
+  <qa>  
+    <question> … </question>  
+    <answer> … </answer>  
+    <cat_num> … </cat_num>  
+    <cat> … </cat>  
+  </qa>  
+  … ×3  
+</qas>
+
+EXAMPLES  
+
+*Good*  
+Q "What imaging technique is commonly used to assess pulmonary artery involvement in Behçet's disease?"  
+A "Pulmonary angiography"
+
+*Bad*  
+Q "Which chemical was used to induce lung tumours *in this study*?" ← refers to the unseen paper.
+
+TITLE AND ABSTRACT
+{title_abstract}
+"""
+
 # Golden answers template
-GOLDEN_ANSWERS_TEMPLATE = """I am generating a dataset for biological question answering.
+GOLDEN_ANSWERS_TEMPLATE_1 = """I am generating a dataset for biological question answering.
 Below I'll give a question with its target answer.
 
 They are questions that have simple factoid answers - meaning the answer is a single entity.
@@ -279,10 +461,67 @@ You must respond with valid JSON list containing only the list of synonyms.
 QUESTION
 {question}
 ANSWER
-{answer}"""
+{answer}
+"""
+
+GOLDEN_ANSWERS_TEMPLATE_2 = """
+You are an expert biomedical‐ontology assistant with exhaustive knowledge of gene, protein, chemical, numeric, and clinical terminology.
+
+TASK  
+You will be given a question and its **gold answer**.  
+The gold answer may contain **one or more distinct entities** (genes, proteins, chemicals, numeric values, etc.).  
+For **each** entity, return **every widely used synonym, alias, abbreviation, spelling or punctuation variant** that appears in established biomedical sources (HGNC, UniProt, GeneCards, MeSH, DrugBank, PubChem, literature).  
+* Include the gold answer itself.  
+* Treat upper- vs lower-case, hyphens, spaces, "α/alpha" variants, and singular/plural forms as distinct synonyms if they occur in the literature.  
+* Do **not** invent new terms or include database IDs (e.g. Q9Y6K9).  
+* If an entity truly has < 3 known synonyms, return the ones that exist.  
+* Preserve the order: start with the original answer, then common abbreviations, then longer or older names.
+
+OUTPUT  
+Return **valid JSON only**.  
+If there is **one entity**, output a flat list.  
+If there are **multiple entities**, output an object whose keys are the original entity strings and whose values are the synonym lists.
+
+EXAMPLES  
+• Input answer: `c-Jun NH2-terminal kinase`  
+  Output:  
+  ["c-Jun NH2-terminal kinase",
+   "c-Jun N-terminal kinase",
+   "c-Jun amino-terminal kinase",
+   "JNK",
+   "JNK1",
+   "SAPK1"]
+
+QUESTION
+{question}
+ANSWER
+{answer}
+"""
+
+PARAPHRASE_TEMPLATE_1 = """
+You are given a question that was written using a particular document as its main source. Your task is to rewrite the question so that it retains the original meaning and would result in the same correct answer, but uses different wording and phrasing. Important constraints:
+Do not broaden or narrow the scope of the question.
+Do not introduce ambiguity or alter clinical/technical context.
+Make sure the correct answer remains exactly the same.
+Your goal is to change the surface wording so that simple bag-of-words search (like BM25) may not easily match the original document, while an expert human or strong language model could still answer correctly.
+Avoid copying any significant phrase (three or more words in sequence) from the original question.
+
+Example: 
+- Original: What congenital abnormality can cause unilateral hydrocephalus in the perinatal period? 
+- Edited: Which birth defect present during the perinatal stage may result in hydrocephalus affecting only one side of the brain?
+
+Output should be in tags like <question> ... </question>
+
+Question: {question}
+Answer: {answer}
+"""
 
 # Template mapping
-TEMPLATES = {1: TEMPLATE_1, 2: TEMPLATE_2}
+TEMPLATES = {1: TEMPLATE_1, 2: TEMPLATE_2, 3: TEMPLATE_3, 4: TEMPLATE_4}
+GOLDEN_TEMPLATES = {1: GOLDEN_ANSWERS_TEMPLATE_1, 2: GOLDEN_ANSWERS_TEMPLATE_2}
+PARAPHRASE_TEMPLATES = {1: PARAPHRASE_TEMPLATE_1}
+
+TEMPLATES_MULTIQUESTION = [3, 4]
 
 
 def parse_llm_response(response: str) -> Dict[str, str]:
@@ -317,7 +556,61 @@ def parse_llm_response(response: str) -> Dict[str, str]:
     return result
 
 
-def process_batch(batch_data: List[Dict], template: str) -> List[Dict]:
+def parse_multi_qa_response(response: str) -> List[Dict[str, str]]:
+    """
+    Parse LLM response that contains multiple Q&A pairs in XML-like tags.
+    
+    Expected format:
+    <qas>
+       <qa> 
+           <question>...</question>
+           <answer>...</answer>
+           <cat_num>...</cat_num>
+           <cat>...</cat>
+       </qa>
+       <qa> 
+           ...
+       </qa>
+       ...
+    </qas>
+    
+    Returns:
+        List of dicts, each with keys: question, answer, cat_num, cat
+    """
+    results = []
+
+    # Find all <qa>...</qa> blocks
+    qa_pattern = r'<qa>(.*?)</qa>'
+    qa_matches = re.findall(qa_pattern, response, re.DOTALL | re.IGNORECASE)
+
+    # Parse each Q&A block
+    for qa_content in qa_matches:
+        result = {'question': '', 'answer': '', 'cat_num': '', 'cat': ''}
+
+        # Define regex patterns for each tag within a Q&A block
+        patterns = {
+            'question': r'<question>(.*?)</question>',
+            'answer': r'<answer>(.*?)</answer>',
+            'cat_num': r'<cat_num>(.*?)</cat_num>',
+            'cat': r'<cat>(.*?)</cat>'
+        }
+
+        # Extract content from each tag
+        for key, pattern in patterns.items():
+            match = re.search(pattern, qa_content, re.DOTALL | re.IGNORECASE)
+            if match:
+                result[key] = match.group(1).strip()
+
+        # Only add if we have at least a question
+        if result['question']:
+            results.append(result)
+
+    return results
+
+
+def process_batch(batch_data: List[Dict],
+                  template: str,
+                  template_key: int = None) -> List[Dict]:
     """Process a batch of abstracts through GPT using batch mode"""
     if not batch_data:
         return []
@@ -350,30 +643,60 @@ def process_batch(batch_data: List[Dict], template: str) -> List[Dict]:
         # Return empty results for the batch if API call fails
         return []
 
+    # Check if we're using a multi-question template
+    is_multi_question = template_key in TEMPLATES_MULTIQUESTION if template_key is not None else False
+
     # Process responses and match them back to original items
     results = []
     for i, (item, response) in enumerate(zip(batch_data, responses)):
         title = item.get('title', '')
         pmid = item.get('pmid', '')
 
-        # Parse response using the new parsing function
+        # Parse response using appropriate parsing function
         try:
-            parsed = parse_llm_response(response)
+            if is_multi_question:
+                # Parse multiple Q&A pairs
+                parsed_list = parse_multi_qa_response(response)
 
-            # Only include if we got at least a question
-            if parsed['question']:
-                results.append({
-                    'question': parsed['question'],
-                    'answer': parsed['answer'],
-                    'cat_num': parsed['cat_num'],
-                    'cat': parsed['cat'],
-                    'pmid': pmid,
-                    'paper_title': title,
-                    'raw_response': response  # Keep raw response for debugging
-                })
+                # Create separate result entries for each Q&A pair
+                for parsed in parsed_list:
+                    if parsed['question']:
+                        results.append({
+                            'question': parsed['question'],
+                            'answer': parsed['answer'],
+                            'cat_num': parsed['cat_num'],
+                            'cat': parsed['cat'],
+                            'pmid': pmid,
+                            'paper_title': title,
+                            'raw_response':
+                            response  # Keep raw response for debugging
+                        })
+
+                if not parsed_list:
+                    print(
+                        f"Warning: No questions found in multi-QA response for PMID {pmid}"
+                    )
+
             else:
-                print(
-                    f"Warning: No question found in response for PMID {pmid}")
+                # Parse single Q&A pair (existing logic)
+                parsed = parse_llm_response(response)
+
+                # Only include if we got at least a question
+                if parsed['question']:
+                    results.append({
+                        'question': parsed['question'],
+                        'answer': parsed['answer'],
+                        'cat_num': parsed['cat_num'],
+                        'cat': parsed['cat'],
+                        'pmid': pmid,
+                        'paper_title': title,
+                        'raw_response':
+                        response  # Keep raw response for debugging
+                    })
+                else:
+                    print(
+                        f"Warning: No question found in response for PMID {pmid}"
+                    )
 
         except Exception as e:
             print(f"Error parsing response for PMID {pmid}: {e}")
@@ -383,9 +706,58 @@ def process_batch(batch_data: List[Dict], template: str) -> List[Dict]:
     return results
 
 
-def generate_golden_answers(qa_pairs: List[Dict]) -> List[Dict]:
+def filter_this_study_answers(qa_pairs: List[Dict]) -> List[Dict]:
+    """
+    Filter out Q&A pairs where the question or answer contains 'this study' or 'the study' (case insensitive).
+    Returns filtered list and prints how many were removed.
+    """
+    original_count = len(qa_pairs)
+
+    # Filter out pairs where question or answer contains "this study" or "the study" (case insensitive)
+    filtered_pairs = []
+    removed_count = 0
+
+    for qa in qa_pairs:
+        question = qa.get('question', '')
+        answer = qa.get('answer', '')
+
+        # Check both question and answer for "this study" and "the study"
+        question_has_this_study = isinstance(
+            question, str) and 'this study' in question.lower()
+        answer_has_this_study = isinstance(
+            answer, str) and 'this study' in answer.lower()
+        question_has_the_study = isinstance(
+            question, str) and 'the study' in question.lower()
+        answer_has_the_study = isinstance(
+            answer, str) and 'the study' in answer.lower()
+
+        if question_has_this_study or answer_has_this_study or question_has_the_study or answer_has_the_study:
+            removed_count += 1
+        else:
+            filtered_pairs.append(qa)
+
+    print(
+        f"Filtered out {removed_count} Q&A pairs containing 'this study' or 'the study' in the question or answer"
+    )
+    print(
+        f"Remaining pairs: {len(filtered_pairs)} (originally {original_count})"
+    )
+
+    return filtered_pairs
+
+
+def generate_golden_answers(qa_pairs: List[Dict],
+                            golden_key: int = 1) -> List[Dict]:
     """Generate golden_answers (synonyms) for each Q&A pair in batches of 50"""
     print("Generating golden answers (synonyms)...")
+
+    # Get golden template
+    if golden_key not in GOLDEN_TEMPLATES:
+        raise ValueError(
+            f"Golden template key {golden_key} not found. Available keys: {list(GOLDEN_TEMPLATES.keys())}"
+        )
+
+    golden_template = GOLDEN_TEMPLATES[golden_key]
 
     batch_size = 50
     updated_qa_pairs = []
@@ -398,8 +770,8 @@ def generate_golden_answers(qa_pairs: List[Dict]) -> List[Dict]:
         # Create prompts for the entire batch
         prompts = []
         for qa in batch:
-            prompt = GOLDEN_ANSWERS_TEMPLATE.format(question=qa['question'],
-                                                    answer=qa['answer'])
+            prompt = golden_template.format(question=qa['question'],
+                                            answer=qa['answer'])
             prompts.append(prompt)
 
         # Call LLM for the entire batch
@@ -457,6 +829,99 @@ def generate_golden_answers(qa_pairs: List[Dict]) -> List[Dict]:
                 updated_qa_pairs.append(updated_qa)
 
     print(f"Generated golden answers for {len(updated_qa_pairs)} Q&A pairs")
+    return updated_qa_pairs
+
+
+def apply_paraphrasing(qa_pairs: List[Dict],
+                       paraphrase_key: int = 1,
+                       paraphrase_pcnt: float = 0.5) -> List[Dict]:
+    """Apply paraphrasing to questions with given probability"""
+    print(
+        f"Applying paraphrasing with probability {paraphrase_pcnt} using template {paraphrase_key}..."
+    )
+
+    # Get paraphrase template
+    if paraphrase_key not in PARAPHRASE_TEMPLATES:
+        raise ValueError(
+            f"Paraphrase template key {paraphrase_key} not found. Available keys: {list(PARAPHRASE_TEMPLATES.keys())}"
+        )
+
+    paraphrase_template = PARAPHRASE_TEMPLATES[paraphrase_key]
+
+    # Add question_original column and determine which questions to paraphrase
+    updated_qa_pairs = []
+    questions_to_paraphrase = []
+    indices_to_paraphrase = []
+
+    random.seed(42)  # For reproducibility
+
+    for i, qa in enumerate(qa_pairs):
+        # Create updated QA with question_original
+        updated_qa = qa.copy()
+        updated_qa['question_original'] = qa['question']
+
+        # Decide whether to paraphrase this question
+        if random.random() < paraphrase_pcnt:
+            # Mark for paraphrasing
+            prompt = paraphrase_template.format(question=qa['question'],
+                                                answer=qa['answer'])
+            questions_to_paraphrase.append(prompt)
+            indices_to_paraphrase.append(i)
+
+        updated_qa_pairs.append(updated_qa)
+
+    print(
+        f"Selected {len(questions_to_paraphrase)} questions for paraphrasing out of {len(qa_pairs)}"
+    )
+
+    if not questions_to_paraphrase:
+        return updated_qa_pairs
+
+    # Process paraphrasing in batches
+    batch_size = 50
+    paraphrased_questions = []
+
+    for i in tqdm(range(0, len(questions_to_paraphrase), batch_size),
+                  desc="Paraphrasing questions"):
+        batch_prompts = questions_to_paraphrase[i:i + batch_size]
+
+        try:
+            responses, _ = call_llm_batch(prompts=batch_prompts,
+                                          model_name="openai/gpt-4.1",
+                                          max_tokens=500,
+                                          temperature=0.7,
+                                          use_cache=True)
+
+            # Parse responses to extract paraphrased questions
+            for response in responses:
+                # Extract question from <question>...</question> tags
+                question_match = re.search(r'<question>(.*?)</question>',
+                                           response, re.DOTALL | re.IGNORECASE)
+                if question_match:
+                    paraphrased_question = question_match.group(1).strip()
+                    paraphrased_questions.append(paraphrased_question)
+                else:
+                    # Fallback to original if parsing fails
+                    paraphrased_questions.append(None)
+                    print(
+                        f"Warning: Could not parse paraphrased question from response: {response[:100]}..."
+                    )
+
+        except Exception as e:
+            print(f"Error calling LLM batch for paraphrasing: {e}")
+            # Add None for entire batch if LLM call fails
+            paraphrased_questions.extend([None] * len(batch_prompts))
+
+    # Apply paraphrased questions back to the dataset
+    paraphrase_count = 0
+    for i, (qa_idx, paraphrased_q) in enumerate(
+            zip(indices_to_paraphrase, paraphrased_questions)):
+        if paraphrased_q is not None:
+            updated_qa_pairs[qa_idx]['question'] = paraphrased_q
+            paraphrase_count += 1
+        # If paraphrasing failed, keep original question
+
+    print(f"Successfully paraphrased {paraphrase_count} questions")
     return updated_qa_pairs
 
 
@@ -562,40 +1027,19 @@ def create_and_push_dataset(qa_pairs: List[Dict],
     return dataset
 
 
-def filter_this_study_answers(qa_pairs: List[Dict]) -> List[Dict]:
-    """
-    Filter out Q&A pairs where the answer contains 'this study' (case insensitive).
-    Returns filtered list and prints how many were removed.
-    """
-    original_count = len(qa_pairs)
-
-    # Filter out pairs where answer contains "this study" (case insensitive)
-    filtered_pairs = []
-    removed_count = 0
-
-    for qa in qa_pairs:
-        answer = qa.get('answer', '')
-        if isinstance(answer, str) and 'this study' in answer.lower():
-            removed_count += 1
-        else:
-            filtered_pairs.append(qa)
-
-    print(
-        f"Filtered out {removed_count} Q&A pairs containing 'this study' in the answer"
-    )
-    print(
-        f"Remaining pairs: {len(filtered_pairs)} (originally {original_count})"
-    )
-
-    return filtered_pairs
-
-
 def generate_dataset_from_abstracts(key: int = 1,
+                                    golden_key: int = 1,
                                     n_samples: int = 1000,
                                     n_test: int = 200,
-                                    hub_name: str = None):
+                                    hub_name: str = None,
+                                    do_paraphrase: bool = True,
+                                    paraphrase_key: int = 1,
+                                    paraphrase_pcnt: float = 0.5):
     """Main function to generate dataset from abstracts"""
-    print(f"Starting dataset generation with key={key}, n_samples={n_samples}")
+    print(
+        f"Starting dataset generation with key={key}, golden_key={golden_key}, n_samples={n_samples}, "
+        f"do_paraphrase={do_paraphrase}, paraphrase_key={paraphrase_key}, paraphrase_pcnt={paraphrase_pcnt}"
+    )
 
     # Inline setup_results_directory
     results_dir = "results/generate_dataset_from_abstracts"
@@ -646,8 +1090,8 @@ def generate_dataset_from_abstracts(key: int = 1,
         if not batch_data:
             continue
 
-        # Process batch
-        batch_results = process_batch(batch_data, template)
+        # Process batch - pass the template key
+        batch_results = process_batch(batch_data, template, template_key=key)
         all_results.extend(batch_results)
 
         # Save intermediate results
@@ -660,9 +1104,15 @@ def generate_dataset_from_abstracts(key: int = 1,
     # Save initial results
     if all_results:
         df = pd.DataFrame(all_results)
-        output_file = os.path.join(
-            results_dir,
-            f"generated_dataset_key_{key}_n_{n_samples}_initial.csv")
+
+        # Create and push to HuggingFace Hub (moved up to get hub_name early)
+        if hub_name is None:
+            hub_name = f"jmhb/PaperSearchRL_v{key}_gv{golden_key}_n{n_samples}_test{n_test}"
+
+        # Extract dataset name from hub_name (remove "jmhb/" prefix)
+        dataset_name = hub_name.split('/')[-1] if '/' in hub_name else hub_name
+
+        output_file = os.path.join(results_dir, f"{dataset_name}_initial.csv")
         df.to_csv(output_file, index=False)
         print(f"Initial Q&A results saved to {output_file}")
         print(f"Generated {len(all_results)} Q&A pairs")
@@ -671,23 +1121,57 @@ def generate_dataset_from_abstracts(key: int = 1,
         all_results = filter_this_study_answers(all_results)
 
         # Generate golden answers
-        all_results_with_golden = generate_golden_answers(all_results)
+        all_results_with_golden = generate_golden_answers(
+            all_results, golden_key=golden_key)
+
+        # Apply paraphrasing if enabled
+        if do_paraphrase:
+            all_results_with_golden = apply_paraphrasing(
+                all_results_with_golden,
+                paraphrase_key=paraphrase_key,
+                paraphrase_pcnt=paraphrase_pcnt)
+
+        # Add is_paraphrased column
+        if do_paraphrase:
+            for qa in all_results_with_golden:
+                qa['is_paraphrased'] = qa['question_original'] != qa[
+                    'question']
+        else:
+            # If no paraphrasing was done, add the column as False for all entries
+            for qa in all_results_with_golden:
+                qa['is_paraphrased'] = False
 
         # Set debug breakpoint as requested
-        ipdb.set_trace()
 
-        # Save final results with golden answers
+        # Save final results with golden answers (and possibly paraphrasing)
         df_final = pd.DataFrame(all_results_with_golden)
-        final_output_file = os.path.join(
-            results_dir,
-            f"generated_dataset_key_{key}_n_{n_samples}_with_golden.csv")
+
+        # Reorder columns to put question_original first if it exists
+        if 'question_original' in df_final.columns:
+            # Define desired column order
+            cols = [
+                'question_original', 'question', 'answer', 'is_paraphrased'
+            ]
+            # Add remaining columns
+            remaining_cols = [
+                col for col in df_final.columns if col not in cols
+            ]
+            cols.extend(remaining_cols)
+            df_final = df_final[cols]
+        elif 'is_paraphrased' in df_final.columns:
+            # If no question_original but is_paraphrased exists, put is_paraphrased after answer
+            cols = ['question', 'answer', 'is_paraphrased']
+            remaining_cols = [
+                col for col in df_final.columns if col not in cols
+            ]
+            cols.extend(remaining_cols)
+            df_final = df_final[cols]
+
+        final_output_file = os.path.join(results_dir, f"{dataset_name}.csv")
         df_final.to_csv(final_output_file, index=False)
         print(
-            f"Final results with golden answers saved to {final_output_file}")
-
-        # Create and push to HuggingFace Hub
-        if hub_name is None:
-            hub_name = f"PaperSearchRL_n{len(all_results_with_golden)}_test{n_test}"
+            f"Final results with golden answers{' and paraphrasing' if do_paraphrase else ''} saved to {final_output_file}"
+        )
 
         dataset = create_and_push_dataset(all_results_with_golden,
                                           n_test=n_test,
@@ -734,12 +1218,29 @@ def generate_dataset_from_abstracts(key: int = 1,
 
 if __name__ == "__main__":
     # You can modify these parameters or add command line argument parsing
-    n_samples = 1000
-    n_test = 500
-    key = 2
-    hub_name = f"jmhb/PaperSearchRL_v{key}_n{n_samples}_test{n_test}"
+    n_samples = 500
+    n_test = 250
+    key = 4
+    golden_key = 2
+    do_paraphrase = True
+    paraphrase_key = 1
+    paraphrase_pcnt = 0.5
+
+    # Build hub_name with paraphrasing info if applicable
+    base_hub_name = f"jmhb/PaperSearchRL_v{key}_gv{golden_key}_n{n_samples}_test{n_test}"
+    if do_paraphrase:
+        pcnt_rounded = round(paraphrase_pcnt * 100)
+        hub_name = f"{base_hub_name}_parav{paraphrase_key}pcnt{pcnt_rounded}"
+    else:
+        hub_name = base_hub_name
+    print(f"hub_name: {hub_name}")
+
     print(f"generating dataset with hub_name: {hub_name}")
     generate_dataset_from_abstracts(key=key,
+                                    golden_key=golden_key,
                                     n_samples=n_samples,
                                     n_test=n_test,
-                                    hub_name=hub_name)
+                                    hub_name=hub_name,
+                                    do_paraphrase=do_paraphrase,
+                                    paraphrase_key=paraphrase_key,
+                                    paraphrase_pcnt=paraphrase_pcnt)

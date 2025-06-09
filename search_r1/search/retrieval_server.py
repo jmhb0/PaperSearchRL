@@ -434,16 +434,21 @@ def retrieve_endpoint(request: QueryRequest):
     if not request.topk:
         request.topk = config.retrieval_topk  # fallback to default
 
-    # Perform batch retrieval
-    results, scores = retriever.batch_search(
-        query_list=request.queries,
-        num=request.topk,
-        return_score=request.return_scores)
+    # Perform batch retrieval - handle return value based on return_scores
+    if request.return_scores:
+        results, scores = retriever.batch_search(query_list=request.queries,
+                                                 num=request.topk,
+                                                 return_score=True)
+    else:
+        results = retriever.batch_search(query_list=request.queries,
+                                         num=request.topk,
+                                         return_score=False)
+        scores = None
 
     # Format response
     resp = []
     for i, single_result in enumerate(results):
-        if request.return_scores:
+        if request.return_scores and scores is not None:
             # If scores are returned, combine them with results
             combined = []
             for doc, score in zip(single_result, scores[i]):
@@ -451,7 +456,12 @@ def retrieve_endpoint(request: QueryRequest):
             resp.append(combined)
         else:
             resp.append(single_result)
-    return {"result": resp}
+    return {
+        "result": resp,
+        "retriver_type": config.retrieval_method,
+        "index_filename": os.path.basename(config.index_path),
+        "corpus_filename": os.path.basename(config.corpus_path)
+    }
 
 
 if __name__ == "__main__":
