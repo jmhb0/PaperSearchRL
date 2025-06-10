@@ -144,6 +144,9 @@ reward_model:
   structure_format_score: 0
   final_format_score: 0
   retrieval_score: 0
+  use_llm_judge: false
+  llm_judge_model: "openai/gpt-4o-mini"
+  llm_judge_max_concurrent: 50
 
 retriever:
   url: "http://127.0.0.1:8000/retrieve"

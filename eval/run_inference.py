@@ -904,6 +904,7 @@ def run_inference(config: InferenceConfig,
                 golden_answers.append(row['answer'])
 
         # Run batch judgment
+        # use the full 4o model bc it's for an eval set that isn't that big anyway
         judgments = llm_judge_batch(questions,
                                     ground_truths,
                                     predictions,

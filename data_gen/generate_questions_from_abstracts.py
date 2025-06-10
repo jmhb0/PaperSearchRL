@@ -481,13 +481,8 @@ Return a flat list of strings.
 
 EXAMPLES  
 • Input answer: `c-Jun NH2-terminal kinase`  
-  Output:  
-  ["c-Jun NH2-terminal kinase",
-   "c-Jun N-terminal kinase",
-   "c-Jun amino-terminal kinase",
-   "JNK",
-   "JNK1",
-   "SAPK1"]
+  Output is a json with key `golden_answers` and value a list of strings:  
+  {{"golden_answers": ["c-Jun NH2-terminal kinase", "c-Jun N-terminal kinase", "c-Jun amino-terminal kinase", "JNK", "JNK1", "SAPK1"]}}
 
 QUESTION
 {question}
@@ -785,7 +780,8 @@ def generate_golden_answers(qa_pairs: List[Dict],
             for qa, golden_answers in zip(batch, responses):
                 updated_qa = qa.copy()
                 try:
-                    golden_answers = json.loads(golden_answers)
+                    golden_answers = json.loads(
+                        golden_answers)['golden_answers']
                     # With json_mode=True, `call_llm_batch` should return parsed JSON objects.
                     # We validate that we got a non-empty list or dictionary.
                     if (isinstance(golden_answers,
@@ -912,7 +908,7 @@ def apply_paraphrasing(qa_pairs: List[Dict],
 
 def create_and_push_dataset(qa_pairs: List[Dict],
                             n_test: int = 200,
-                            hub_name: str = "PaperSearchRL_n1500_test200"):
+                            hub_name: str = None):
     """Create train/test split and push to HuggingFace Hub"""
     print(
         f"Creating dataset with {len(qa_pairs)} examples, test size: {n_test}")
@@ -926,7 +922,7 @@ def create_and_push_dataset(qa_pairs: List[Dict],
 
         def fix_golden_answers(x):
             """Fix golden_answers by flattening nested lists and filtering non-lists"""
-            if not isinstance(x, dict):
+            if not isinstance(x, list):
                 return None  # Mark for removal
 
             # Flatten nested lists
@@ -971,8 +967,6 @@ def create_and_push_dataset(qa_pairs: List[Dict],
         print(
             f"Original dataset size: {original_length}, Filtered dataset size: {len(df)}"
         )
-
-        ipdb.set_trace()
 
         # Convert back to list of dictionaries
         qa_pairs = df.to_dict('records')
@@ -1206,7 +1200,7 @@ if __name__ == "__main__":
     n_test = 500
     key = 4
     golden_key = 2
-    do_paraphrase = True
+    do_paraphrase = False
     paraphrase_key = 1
     paraphrase_pcnt = 0.5
 

@@ -458,7 +458,7 @@ if __name__ == "__main__":
     papersearchr1_model_path = "./checkpoints/20250606_papersearchr1v1_qwenit_bm25/global_step_100/"
     first_n = 50
     model_id = "Qwen/Qwen2.5-3B-Instruct"
-    dataset_id = "jmhb/PaperSearchRL_v1_n10000_test500"
+    dataset_id = "jmhb/PaperSearchRL_v4_gv2_n3000_test500",
     results_df = eval_batch_searchr1(papersearchr1_model_path,
                                      model_id=model_id,
                                      dataset_id=dataset_id,

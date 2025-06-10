@@ -16,6 +16,45 @@ import httpx
 from PIL import Image
 from openai import OpenAI, AsyncOpenAI
 from filelock import FileLock
+import threading
+import sys
+
+
+class BatchProgressCounter:
+    """Thread-safe progress counter for batch LLM operations."""
+
+    def __init__(self, total_requests: int):
+        self.total_requests = total_requests
+        self.completed = 0
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.lock = threading.Lock()
+        self._display_line = None
+
+    def update_cache_hit(self):
+        """Record a cache hit and update display."""
+        with self.lock:
+            self.completed += 1
+            self.cache_hits += 1
+            self._update_display()
+
+    def update_cache_miss(self):
+        """Record a cache miss and update display."""
+        with self.lock:
+            self.completed += 1
+            self.cache_misses += 1
+            self._update_display()
+
+    def _update_display(self):
+        """Update the progress display on the same line."""
+        progress_text = (
+            f"\rProgress: {self.completed}/{self.total_requests} completed "
+            f"| Cache: {self.cache_hits} hits, {self.cache_misses} misses")
+        print(progress_text, end="", flush=True)
+
+    def finalize(self):
+        """Print final newline to complete the progress display."""
+        print()  # New line after progress is complete
 
 
 class LLMCache:
@@ -25,6 +64,7 @@ class LLMCache:
         """Initialize the cache with LMDB."""
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_path = os.path.join(cache_dir, "llm_cache.lmdb")
+        print(self.cache_path)
         self.lock_path = self.cache_path + ".lock"
         self.lock = FileLock(self.lock_path)
         self.env = lmdb.open(self.cache_path,
@@ -68,7 +108,14 @@ class LLMCache:
         with self.env.begin() as txn:
             cached_value = txn.get(key.encode())
             if cached_value:
-                print("✓", end="", flush=True)  # Cache hit indicator
+                # Handle batch counter for cache hit
+                global _batch_counter
+                if _batch_counter:
+                    _batch_counter.update_cache_hit()
+                else:
+                    print("✓", end="",
+                          flush=True)  # Original behavior for single calls
+
                 try:
                     # Try to parse as JSON (new format with cost)
                     cached_data = json.loads(cached_value.decode())
@@ -110,6 +157,9 @@ class LLMCache:
 
 # Global cache instance
 _cache = LLMCache()
+
+# Global batch counter for progress tracking
+_batch_counter = None
 
 # Register cleanup function to run when script exits
 atexit.register(_cache.close)
@@ -181,7 +231,11 @@ def call_llm(text: str,
                 return cached_response, None
 
     # If we reach here, it's either a cache miss or cache is disabled
-    print("✗", end="", flush=True)  # Cache miss indicator
+    global _batch_counter
+    if _batch_counter:
+        _batch_counter.update_cache_miss()
+    else:
+        print("✗", end="", flush=True)  # Original behavior for single calls
 
     async def _async_call():
         # Initialize OpenAI client with OpenRouter endpoint
@@ -381,23 +435,37 @@ def call_llm_batch(
     elif len(images_list) != len(prompts):
         raise ValueError("images_list must have the same length as prompts")
 
-    # Run the async batch process from the sync function.
-    # asyncio.run handles the event loop and graceful shutdown on Ctrl+C.
+    # Set up batch progress counter
+    global _batch_counter
+    _batch_counter = BatchProgressCounter(len(prompts))
+
     try:
-        return asyncio.run(
+        result = asyncio.run(
             _async_call_llm_batch_processor(prompts, images_list, model_name,
                                             provider, use_cache, max_tokens,
                                             temperature, max_concurrent,
                                             include_cost, json_mode))
+
+        # Finalize progress display
+        _batch_counter.finalize()
+        return result
+
     except KeyboardInterrupt:
         # Intercept the KeyboardInterrupt from asyncio.run to provide a clear message.
-        print("\n🚫 Batch processing interrupted by user. Shutting down.")
+        if _batch_counter:
+            _batch_counter.finalize()
+        print("🚫 Batch processing interrupted by user. Shutting down.")
         # Return empty lists to signal partial/interrupted completion.
         if include_cost:
             return [], []
         return [], None
     except Exception as e:
+        if _batch_counter:
+            _batch_counter.finalize()
         raise Exception(f"Batch processing failed: {str(e)}")
+    finally:
+        # Reset batch counter
+        _batch_counter = None
 
 
 def list_available_models() -> List[Dict[str, Any]]:
@@ -475,7 +543,7 @@ def test_batch_llm_calls():
         responses, costs = call_llm_batch(
             prompts=prompts,
             model_name="openai/gpt-4o-mini",
-            max_concurrent=3  # Limit to 3 concurrent requests
+            max_concurrent=2  # Limit to 3 concurrent requests
         )
 
         end_time = time.time()
@@ -551,22 +619,24 @@ def test_cost_tracking():
 
 # Example usage and testing
 if __name__ == "__main__":
-    test_llm_calls()
+    # test_llm_calls()
     print("\n" + "=" * 70)
     test_batch_llm_calls()
+    import sys
+    sys.exit()
     print("\n" + "=" * 70)
     test_cost_tracking()
 
-    # Example of a single call
-    response, cost = call_llm("What is the capital of France?",
-                              include_cost=True)
-    print(f"\nResponse: {response}")
-    if cost is not None:
-        print(f"Cost: ${cost:.8f} USD")
+    # # Example of a single call
+    # response, cost = call_llm("What is the capital of France?",
+    #                           include_cost=True)
+    # print(f"\nResponse: {response}")
+    # if cost is not None:
+    #     print(f"Cost: ${cost:.8f} USD")
 
     # Example of a batch call
-    responses, costs = call_llm_batch(
-        prompts=["What is 2+2?", "Name a color."], include_cost=True)
+    prompts = ["What is 2+2?"] * 10 + ["Name a color."] * 10
+    responses, costs = call_llm_batch(prompts=prompts, include_cost=True)
     if costs:
         total_cost = sum(costs)
         print(f"\nTotal cost for batch: ${total_cost:.8f} USD")
