@@ -94,7 +94,7 @@ echo "Server is ready!"
 source /opt/conda/etc/profile.d/conda.sh
 conda activate searchr1
 pip install -e .
-pip install ipdb
+pip install ipdb lmdb httpx Pillow openai filelock
 echo "installed searchr1 env"
 
 ## training with remaining GPUs

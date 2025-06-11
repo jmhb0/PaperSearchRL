@@ -1,5 +1,6 @@
 import transformers
 import torch
+import time
 import random
 from datasets import load_dataset
 import requests
@@ -172,6 +173,7 @@ If you find no further external knowledge needed, you can directly provide the a
         outputs = model.generate(input_ids,
                                  attention_mask=attention_mask,
                                  max_new_tokens=1024,
+                                 stopping_criteria=stopping_criteria,
                                  pad_token_id=tokenizer.eos_token_id,
                                  do_sample=True,
                                  temperature=0.7)
@@ -310,16 +312,50 @@ def eval_inference_with_search(verbose=0):
     if verbose:
         print(f"Summary statistics saved to: {summary_path}")
 
-    ipdb.set_trace()
     return results_df
 
 
 # Process all questions and collect results
-def eval_inference_with_search_questions(verbose=0):
+def eval_inference_with_search_batch(verbose=0):
+    questions = [
+        "Where, in the body, would the Cobb-Stainsby excision arthroplasty be performed?",
+        "What is the origin of  HEp-2 cells?",
+        "Which disease is associated with the ectopic expression of the protein encoded by the gene DUX4?",
+        "What is disrupted by ALS- and FTD-associated missense mutations in TBK1?",
+        "Covid-19 is though to have arisen from what species?",
+        "Which hormone abnormalities are common in Williams syndrome ?",
+    ]
+    questions = [
+        'Which segment of the small intestine is most frequently affected by perforation after ingestion of foreign bodies in children?',
+        'What type of toy component is associated with pressure necrosis and intestinal perforation when ingested by children?',
+        'Which blood test marker is quantitatively associated with an increased risk of bacteraemia in emergency medical admissions?',
+        # 'What type of white blood cell count, when low at admission, is associated with bacteraemia risk in patients with acute medical emergencies?',
+        # 'Which laboratory marker, when elevated, is included alongside lymphocyte and neutrophil counts in predictive models for bacteraemia in emergency medical patients?',
+        # 'What is the medical term for progressive atrophy affecting one side of the face?',
+        # 'Which cranial nerve-related condition is commonly associated with neuralgic pain in Parry-Romberg disease?',
+        # 'What region of the face is most frequently affected by muscle cramps in patients with Parry-Romberg disease?',
+        # 'What virus is a well-known risk associated with homologous blood transfusion?',
+        # 'What type of blood donation can reduce the need for homologous transfusion in surgical patients?',
+        # 'What surgical procedure commonly includes pelvic lymphadenectomy for the treatment of gynecologic cancer?',
+        # 'What enzyme from Arabidopsis thaliana is inhibited by di-FMOC and di-Cbz glutathione derivatives?',
+        # 'Which chemical protecting group is present in the most potent glyoxalase II inhibitor mentioned, with a K(i) value of approximately 0.89 micromolar?',
+        # 'What type of structural modification was tested to understand glyoxalase II inhibition, as indicated by the use of site-directed mutants?',
+        # "Which DNA repair protein is required for sensitivity to the alkylating agent N-methyl-N'-nitro-N'-nitrosoguanidine (MNNG)?",
+        # "Which tyrosine kinase is necessary to activate MAPK signaling in response to DNA damage caused by N-methyl-N'-nitro-N'-nitrosoguanidine (MNNG)?",
+        # "Which kinase is required for the activation of the transcription factor c-Jun after exposure to the DNA-methylating agent N-methyl-N'-nitro-N'-nitrosoguanidine (MNNG)?",
+        # "What gene's expression in Arabidopsis thaliana is induced by sugars such as sucrose and glucose and encodes an enzyme involved in starch breakdown?",
+        # 'Which recessive mutation in Arabidopsis thaliana causes enhanced expression of the beta-amylase gene in response to sugar in the growth medium?',
+        # 'What pigment, found at elevated levels in the petioles of certain Arabidopsis thaliana mutants, is associated with responses to sugar signaling?'
+    ]
+    model_id = 'Qwen/Qwen2.5-3B-Instruct'
+    # checkpoint_path = "data/verl_checkpoints/20250604_grpo_bioasqv0_fullcorpus_qwenit_bm25/actor/global_step_100/"
+    checkpoint_path = "checkpoints/20250606_papersearchr1v1_qwenit_bm25/global_step_100/"
+
     results = []
     tokenizer, model = load_model_and_tokenizer(model_id,
                                                 checkpoint_path,
                                                 verbose=verbose)
+    start_time = time.time()
     for i, question in enumerate(questions):
         if verbose:
             print(f"\n{'='*50}")
@@ -332,32 +368,15 @@ def eval_inference_with_search_questions(verbose=0):
                                       model,
                                       verbose=verbose)
         results.append(trace)
-
-    if verbose:
-        print(f"\nCompleted processing {len(questions)} questions.")
-        print(
-            f"Results collected in 'results' list with {len(results)} entries."
-        )
+    elapsed = time.time() - start_time
+    print(
+        f"[TIME] Total elapsed: {elapsed:.2f} seconds ({elapsed/len(questions):.2f} s/question)"
+    )
+    ipdb.set_trace()
+    pass
 
 
 if __name__ == "__main__":
-    questions = [
-        "Where, in the body, would the Cobb-Stainsby excision arthroplasty be performed?",
-        "What is the origin of  HEp-2 cells?",
-        "Which disease is associated with the ectopic expression of the protein encoded by the gene DUX4?",
-        "What is disrupted by ALS- and FTD-associated missense mutations in TBK1?",
-        "Covid-19 is though to have arisen from what species?",
-        "Which hormone abnormalities are common in Williams syndrome ?",
-    ]
-
-    # Model ID setup (device removed since device_map="auto" handles it)
-    # model_id = "PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-7b-em-ppo"
-    model_id = 'Qwen/Qwen2.5-3B-Instruct'
-    checkpoint_path = "data/verl_checkpoints/20250604_grpo_bioasqv0_fullcorpus_qwenit_bm25/actor/global_step_100/"
-    # Remove the device variable since device_map="auto" handles device placement
-
-    # Load model and tokenizer
-    df = eval_inference_with_search(verbose=0)
-
+    df = eval_inference_with_search_batch(verbose=0)
     ipdb.set_trace()
     pass
