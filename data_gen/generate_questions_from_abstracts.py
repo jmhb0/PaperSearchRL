@@ -1,5 +1,8 @@
 """
 python -m ipdb data_gen/generate_questions_from_abstracts.py
+Options 
+
+
 Script to generate question-answer datasets from PubMed abstracts using GPT.
 
 PREREQUISITES:
@@ -436,6 +439,59 @@ TITLE AND ABSTRACT
 {title_abstract}
 """
 
+# it's actually the same as template 4 but I want a fresh version
+TEMPLATE_5 = """
+BACKGROUND  
+You are a domain-expert biomedical NLP assistant helping to build an open-domain factoid QA set.  
+At evaluation time, the QA system will NOT see the source article—only PubMed as a whole.
+
+INPUT  
+You receive one PubMed article (title + abstract).
+
+TASK  
+Produce **3** new question–answer pairs that meet all guidelines below.
+
+GUIDELINES  
+1. **Factoid only** – the answer is a single, unambiguous biomedical entity (gene, drug, disease, method, etc.).  
+2. **Independence** – word questions so they do *not* rely on the given article being visible.  
+   *Avoid phrases like "in this study", "according to the article", or any hint that a specific paper is required.*  
+3. **Knowledge scope** – choose facts that are (a) stated in the abstract **and** (b) well supported elsewhere in PubMed, so retrieval is feasible.  
+4. **Acronyms** – spell out uncommon acronyms on first mention, e.g. "extracorporeal membrane oxygenation (ECMO)".  
+5. **Tone** – clear, direct, non-pretentious.  
+6. **Category tag** – if the QA fits one of the 10 categories below, include that number and label; otherwise use 0 / "Other".
+
+CATEGORIES  
+1 Genetic mutations 2 Therapeutics & clinical evidence 3 Protein function & signalling  
+4 Methods & resources 5 Disease causation & pathogens 6 Biomarkers & diagnostics  
+7 Bioinformatics databases 8 Clinical scales & classifications  
+9 Anatomy & cellular localisation 10 Psychology & behavioural health
+
+OUTPUT  
+Return exactly:
+
+<qas>  
+  <qa>  
+    <question> … </question>  
+    <answer> … </answer>  
+    <cat_num> … </cat_num>  
+    <cat> … </cat>  
+  </qa>  
+  … ×3  
+</qas>
+
+EXAMPLES  
+
+*Good*  
+Q "What imaging technique is commonly used to assess pulmonary artery involvement in Behçet's disease?"  
+A "Pulmonary angiography"
+
+*Bad*  
+Q "Which chemical was used to induce lung tumours *in this study*?" ← refers to the unseen paper.
+
+TITLE AND ABSTRACT
+{title_abstract}
+"""
+
 # Golden answers template
 GOLDEN_ANSWERS_TEMPLATE_1 = """I am generating a dataset for biological question answering.
 Below I'll give a question with its target answer.
@@ -490,6 +546,44 @@ ANSWER
 {answer}
 """
 
+GOLDEN_ANSWERS_TEMPLATE_3 = """
+**Biomedical Ontology QA Golden Answer Expansion Task**
+
+You are an expert biomedical ontology assistant with exhaustive knowledge of genes, proteins, chemicals, numeric, and clinical terminology.
+
+**TASK**  
+You will be given a question and its corresponding **golden_answer**.  
+The **golden_answer** may refer to one or more biomedical entities (e.g., gene, protein, chemical, disease, peptide, etc.).
+
+For **each entity**, return **every widely used synonym, established alias, abbreviation, alternate spelling, or punctuation variant** that is found in authoritative biomedical sources (such as HGNC, UniProt, GeneCards, MeSH, DrugBank, PubChem, and peer-reviewed literature).
+
+For **each answer**, you must:
+
+- Include the original golden answer as given.
+- Include all common abbreviations, aliases, spelling or punctuation variants found in the literature or biomedical databases.
+- Include all singular and plural forms, if they are attested in the literature or resources.
+- Do **not** invent new terms; only include real, attested synonyms or variants.
+- Do **not** include database IDs or accessions.
+- Different upper/lower case forms are **not** required, as matching will be case-insensitive.
+- Preserve the order: start with the original answer, then common abbreviations, then longer or older names, then plural forms.
+- If an entity has < 3 known valid synonyms, return **all that exist**.
+- Return a **flat list of strings** in **valid JSON**.
+- Remember, if you miss any, then very bad things will happen, so don't forget any.
+
+**OUTPUT**  
+Return valid JSON only with key "golden_answers" and value a list of strings.
+Return all discovered and attested names as a flat list of strings.
+
+**EXAMPLES**
+- If the golden answer is "gamma-aminobutyric acid", accepted output includes {{"golden_answers" : ["gamma-aminobutyric acid", "GABA", "4-aminobutyric acid", "gamma-aminobutyric acids", "GABA", "GABAs"]  }}
+- If the golden answer is "acetylcholine", accepted output includes {{"golden_answers" : ["acetylcholine", "ACh", "acetyl choline", "acetylcholines", "AChs"]}}
+
+QUESTION
+{question}
+ANSWER
+{answer}
+"""
+
 PARAPHRASE_TEMPLATE_1 = """
 You are given a question that was written using a particular document as its main source. Your task is to rewrite the question so that it retains the original meaning and would result in the same correct answer, but uses different wording and phrasing. Important constraints:
 Do not broaden or narrow the scope of the question.
@@ -509,11 +603,21 @@ Answer: {answer}
 """
 
 # Template mapping
-TEMPLATES = {1: TEMPLATE_1, 2: TEMPLATE_2, 3: TEMPLATE_3, 4: TEMPLATE_4}
-GOLDEN_TEMPLATES = {1: GOLDEN_ANSWERS_TEMPLATE_1, 2: GOLDEN_ANSWERS_TEMPLATE_2}
+TEMPLATES = {
+    1: TEMPLATE_1,
+    2: TEMPLATE_2,
+    3: TEMPLATE_3,
+    4: TEMPLATE_4,
+    5: TEMPLATE_5
+}
+GOLDEN_TEMPLATES = {
+    1: GOLDEN_ANSWERS_TEMPLATE_1,
+    2: GOLDEN_ANSWERS_TEMPLATE_2,
+    3: GOLDEN_ANSWERS_TEMPLATE_3
+}
 PARAPHRASE_TEMPLATES = {1: PARAPHRASE_TEMPLATE_1}
 
-TEMPLATES_MULTIQUESTION = [3, 4]
+TEMPLATES_MULTIQUESTION = [3, 4, 5]
 
 
 def parse_llm_response(response: str) -> Dict[str, str]:
@@ -660,8 +764,6 @@ def process_batch(batch_data: List[Dict],
                             'cat': parsed['cat'],
                             'pmid': pmid,
                             'paper_title': title,
-                            'raw_response':
-                            response  # Keep raw response for debugging
                         })
 
                 if not parsed_list:
@@ -740,7 +842,7 @@ def filter_this_study_answers(qa_pairs: List[Dict]) -> List[Dict]:
 
 def generate_golden_answers(qa_pairs: List[Dict],
                             golden_key: int = 1) -> List[Dict]:
-    """Generate golden_answers (synonyms) for each Q&A pair in batches of 50"""
+    """Generate golden_answers (synonyms) for each Q&A pair in batches """
     print("Generating golden answers (synonyms)...")
 
     # Get golden template
@@ -751,7 +853,7 @@ def generate_golden_answers(qa_pairs: List[Dict],
 
     golden_template = GOLDEN_TEMPLATES[golden_key]
 
-    batch_size = 50
+    batch_size = 1000
     updated_qa_pairs = []
 
     # Process in batches of 50
@@ -769,7 +871,7 @@ def generate_golden_answers(qa_pairs: List[Dict],
         # Call LLM for the entire batch
         try:
             responses, _ = call_llm_batch(prompts=prompts,
-                                          model_name="openai/gpt-4-turbo",
+                                          model_name="openai/gpt-4.1",
                                           max_tokens=500,
                                           temperature=0.3,
                                           max_concurrent=50,
@@ -859,7 +961,7 @@ def apply_paraphrasing(qa_pairs: List[Dict],
         return updated_qa_pairs
 
     # Process paraphrasing in batches
-    batch_size = 50
+    batch_size = 1000
     paraphrased_questions = []
 
     for i in tqdm(range(0, len(questions_to_paraphrase), batch_size),
@@ -1041,14 +1143,23 @@ def generate_dataset_from_abstracts(key: int = 1,
     total_length = len(indexer)
     print(f"Database loaded. Total articles: {total_length}")
 
-    # Inline get_random_sample_indices (simplified)
+    # Generate a large random sample once, then take first n_samples
+    # This ensures that the first 10 samples are always the same whether you take 10, 20, or more
     random.seed(0)
     np.random.seed(0)
-    indices = random.sample(range(total_length), n_samples)
-    print(f"Selected {len(indices)} random indices")
+
+    # Generate a large master list of random indices (e.g., 50k or use total_length)
+    max_samples = total_length
+    master_indices = random.sample(range(total_length), max_samples)
+
+    # Take only the first n_samples from the master list
+    indices = master_indices[:n_samples]
+    print(
+        f"Selected first {len(indices)} indices from master random list of {len(master_indices)}"
+    )
 
     # Process in batches of 50
-    batch_size = 50
+    batch_size = 1000
     all_results = []
 
     for i in tqdm(range(0, len(indices), batch_size),
@@ -1197,10 +1308,10 @@ def generate_dataset_from_abstracts(key: int = 1,
 if __name__ == "__main__":
     # You can modify these parameters or add command line argument parsing
     n_samples = 3000
-    n_test = 500
-    key = 4
-    golden_key = 2
-    do_paraphrase = False
+    n_test = 300
+    key = 5
+    golden_key = 3
+    do_paraphrase = True
     paraphrase_key = 1
     paraphrase_pcnt = 0.5
 

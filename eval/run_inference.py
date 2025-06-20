@@ -1,4 +1,7 @@
 """
+python -m ipdb eval/run_inference.py --method rag --first_n 300 --model_id qwen/Qwen2.5-3B-Instruct --dataset_id jmhb/PaperSearchRL_v4_gv2_n3000_test500
+python -m ipdb eval/run_inference.py --method rag --first_n 300 --model_id qwen/Qwen2.5-7B-Instruct --dataset_id jmhb/PaperSearchRL_v4_gv2_n3000_test500
+
 Inference script for PaperSearchRL evaluation with multiple methods.
 Supports: Direct Inference, CoT, RAG, SearchR1, and PaperSearchR1.
 The RAG, SearchR1, and PaperSearchR1 methods assume a running server on 127.0.0.1:8000.
@@ -53,12 +56,8 @@ class InferenceConfig:
     first_n: int = 10000
     # Method-specific configs
     rag_top_k: int = 3
-    rag_retriever_type: Optional[str] = None
+    rag_retriever_type: Optional[str] = "bm25"
     rag_corpus_filename: str = "pubmed.jsonl"
-    searchr1_model_path: Optional[
-        str] = "./checkpoints/20250606_papersearchr1v1_qwenit_bm25/global_step_100/"
-    papersearchr1_model_path: Optional[
-        str] = "./checkpoints/20250606_papersearchr1v1_qwenit_bm25/global_step_100/"
     use_cache: bool = True
     overwrite_cache: bool = False
     # VLLM specific configs
@@ -72,7 +71,7 @@ class InferenceCache:
     def __init__(self, cache_dir: str = "./cache"):
         """Initialize the cache with LMDB."""
         os.makedirs(cache_dir, exist_ok=True)
-        self.cache_path = os.path.join(cache_dir, "inference_cache.lmdb")
+        self.cache_path = os.path.join(cache_dir, "infer_cache.lmdb")
         self.lock_path = self.cache_path + ".lock"
         self.lock = FileLock(self.lock_path)
         self.env = lmdb.open(self.cache_path,
@@ -136,19 +135,6 @@ class InferenceEngine:
 
     def _load_model(self):
         """Load the model and tokenizer."""
-        if self.config.method in ["searchr1", "papersearchr1"]:
-            # Special handling for SearchR1 and PaperSearchR1
-            model_path = (self.config.searchr1_model_path
-                          if self.config.method == "searchr1" else
-                          self.config.papersearchr1_model_path)
-            if model_path is None:
-                raise ValueError(
-                    f"Model path required for {self.config.method}")
-
-            self.searchr1_tokenizer, self.searchr1_model = load_model_and_tokenizer(
-                self.config.model_id, model_path)
-            print(f"Loaded {self.config.method} model from: {model_path}")
-            return
 
         # For other methods, use VLLM
         self.vllm_model = LLM(
@@ -339,40 +325,6 @@ class InferenceEngine:
 
         return results
 
-    def rag_inference(self,
-                      question: str,
-                      context: str = "") -> Tuple[str, str]:
-        """Retrieval Augmented Generation inference using BatchRAG."""
-        if self.batch_rag is None:
-            raise RuntimeError("BatchRAG not initialized properly")
-
-        # Use question as cache key since BatchRAG handles its own prompting
-        cache_key = f"rag:{question}|{context}"
-        if self.config.use_cache and not self.config.overwrite_cache:
-            cached_result = _inference_cache.get(self.config, cache_key)
-            if cached_result:
-                prediction = self._extract_prediction(cached_result)
-                return cached_result, prediction
-
-        # Use BatchRAG for single question
-        try:
-            contexts, generated_texts, prompts = self.batch_rag.run_batch_rag(
-                [question],
-                retriever_type=self.config.rag_retriever_type,
-                corpus_filename=self.config.rag_corpus_filename)
-            response = generated_texts[0]
-            prediction = self._extract_prediction(response)
-
-            # Cache result
-            if self.config.use_cache or self.config.overwrite_cache:
-                _inference_cache.set(self.config, cache_key, response)
-
-            return response, prediction
-        except Exception as e:
-            error_msg = f"RAG inference failed: {str(e)}"
-            print(f"Error: {error_msg}")
-            return error_msg, "[ERROR]"
-
     def rag_inference_batch(
             self,
             questions: List[str],
@@ -432,84 +384,6 @@ class InferenceEngine:
 
         return results
 
-    def searchr1_inference(self,
-                           question: str,
-                           context: str = "") -> Tuple[str, str]:
-        """SearchR1 method inference using load_model_and_tokenizer and inference_with_search."""
-
-        if self.searchr1_model is None or self.searchr1_tokenizer is None:
-            raise RuntimeError("SearchR1 model not loaded properly")
-
-        # For SearchR1, use question as cache key since it doesn't use our prompt templates
-        cache_key = f"searchr1:{question}|{context}"
-        if self.config.use_cache and not self.config.overwrite_cache:
-            cached_result = _inference_cache.get(self.config, cache_key)
-            if cached_result:
-                prediction = self._extract_prediction(cached_result,
-                                                      method="searchr1")
-                return cached_result, prediction
-
-        # Use the SearchR1 inference function from infer.py
-        # This expects that a retriever service is already running on localhost:8000
-        try:
-            full_trace = inference_with_search(question,
-                                               self.searchr1_tokenizer,
-                                               self.searchr1_model)
-        except Exception as e:
-            error_msg = f"SearchR1 inference failed: {str(e)}"
-            print(f"Error: {error_msg}")
-            return error_msg, "[ERROR]"
-
-        # The inference_with_search function returns the full trace
-        response = full_trace
-
-        prediction = self._extract_prediction(response, method="searchr1")
-
-        # Cache result
-        if self.config.use_cache or self.config.overwrite_cache:
-            _inference_cache.set(self.config, cache_key, response)
-
-        return response, prediction
-
-    def papersearchr1_inference(self,
-                                question: str,
-                                context: str = "") -> Tuple[str, str]:
-        """PaperSearchR1 method inference using load_model_and_tokenizer and inference_with_search."""
-
-        if self.searchr1_model is None or self.searchr1_tokenizer is None:
-            raise RuntimeError("PaperSearchR1 model not loaded properly")
-
-        # For PaperSearchR1, use question as cache key since it doesn't use our prompt templates
-        cache_key = f"papersearchr1:{question}|{context}"
-        if self.config.use_cache and not self.config.overwrite_cache:
-            cached_result = _inference_cache.get(self.config, cache_key)
-            if cached_result:
-                prediction = self._extract_prediction(cached_result,
-                                                      method="papersearchr1")
-                return cached_result, prediction
-
-        # Use the PaperSearchR1 inference function (same interface as SearchR1)
-        # This expects that a retriever service is already running on localhost:8000
-        try:
-            full_trace = inference_with_search(question,
-                                               self.searchr1_tokenizer,
-                                               self.searchr1_model)
-        except Exception as e:
-            error_msg = f"PaperSearchR1 inference failed: {str(e)}"
-            print(f"Error: {error_msg}")
-            return error_msg, "[ERROR]"
-
-        # The inference_with_search function returns the full trace
-        response = full_trace
-
-        prediction = self._extract_prediction(response, method="papersearchr1")
-
-        # Cache result
-        if self.config.use_cache or self.config.overwrite_cache:
-            _inference_cache.set(self.config, cache_key, response)
-
-        return response, prediction
-
     def _extract_prediction(self, response: str, method: str = None) -> str:
         """Extract the final prediction from the model response."""
         response = response.strip()
@@ -567,73 +441,6 @@ class InferenceEngine:
         prediction = prediction.split('\n')[0].strip()
 
         return prediction
-
-    def searchr1_inference_batch(
-            self,
-            questions: List[str],
-            contexts: List[str] = None) -> List[Tuple[str, str]]:
-        """Batch SearchR1 inference using BatchSearchR1 class"""
-
-        if self.searchr1_model is None or self.searchr1_tokenizer is None:
-            raise RuntimeError("SearchR1 model not loaded properly")
-
-        if contexts is None:
-            contexts = [""] * len(questions)
-
-        # Check cache first
-        results = []
-        uncached_indices = []
-        uncached_questions = []
-
-        for i, question in enumerate(questions):
-            cache_key = f"searchr1:{question}|"
-            if self.config.use_cache and not self.config.overwrite_cache:
-                cached_result = _inference_cache.get(self.config, cache_key)
-                if cached_result:
-                    prediction = self._extract_prediction(cached_result,
-                                                          method="searchr1")
-                    results.append((cached_result, prediction))
-                    continue
-
-            uncached_indices.append(i)
-            uncached_questions.append(question)
-            results.append(None)  # Placeholder
-
-        # Process uncached questions using BatchSearchR1
-        if uncached_questions:
-            print(
-                f"Running batch SearchR1 for {len(uncached_questions)} uncached questions..."
-            )
-
-            batch_searchr1 = BatchSearchR1(
-                model=self.searchr1_model,
-                tokenizer=self.searchr1_tokenizer,
-                search_url="http://127.0.0.1:8000/retrieve",
-                topk=3)
-
-            responses, predictions = batch_searchr1.run_batch_searchr1(
-                uncached_questions)
-
-            # Fill in results and cache
-            for idx, response, prediction in zip(uncached_indices, responses,
-                                                 predictions):
-                results[idx] = (response, prediction)
-
-                # Cache the result
-                if self.config.use_cache or self.config.overwrite_cache:
-                    question = questions[idx]
-                    cache_key = f"searchr1:{question}|"
-                    _inference_cache.set(self.config, cache_key, response)
-
-        return results
-
-    def papersearchr1_inference_batch(
-            self,
-            questions: List[str],
-            contexts: List[str] = None) -> List[Tuple[str, str]]:
-        """Same as searchr1_inference_batch but for PaperSearchR1"""
-        # Implementation is identical since both use the same model interface
-        return self.searchr1_inference_batch(questions, contexts)
 
 
 def llm_judge_batch(questions: List[str],
@@ -843,23 +650,6 @@ def run_inference(config: InferenceConfig,
         print("Running batch RAG inference...")
         all_results = engine.rag_inference_batch(questions, contexts)
 
-    elif config.method in ["searchr1", "papersearchr1"]:
-        print(f"Running {config.method} inference (sequential)...")
-        # SearchR1/PaperSearchR1 methods process individually
-        inference_fn = (engine.searchr1_inference if config.method
-                        == "searchr1" else engine.papersearchr1_inference)
-
-        all_results = []
-        for question, context in tqdm(zip(questions, contexts),
-                                      total=len(questions),
-                                      desc="Processing"):
-            try:
-                response, prediction = inference_fn(question, context)
-                all_results.append((response, prediction))
-            except Exception as e:
-                print(f"Error processing question: {e}")
-                all_results.append((f"[ERROR: {str(e)}]", "[ERROR]"))
-
     else:
         raise ValueError(f"Unknown method: {config.method}")
 
@@ -875,27 +665,17 @@ def run_inference(config: InferenceConfig,
 
     results_df = pd.DataFrame(results_data)
 
-    # Save results if path provided
-    if output_path:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        results_df.to_csv(output_path, index=False)
-        print(f"Results saved to: {output_path}")
-
     print(f"Inference complete! Processed {len(results_df)} examples")
 
-    # Run LLM judge if requested
-    if run_judge and len(results_df) > 0:
-        print("Running LLM judge evaluation...")
+    # Always compute exact match scores (moved outside of run_judge check)
+    if len(results_df) > 0:
+        print("Computing exact match scores...")
 
-        # Prepare data for batch processing
-        questions = []
-        ground_truths = []
+        # Prepare data for exact match computation
         predictions = []
         golden_answers = []
 
         for idx, row in results_df.iterrows():
-            questions.append(row['question'])
-            ground_truths.append(row['answer'])
             predictions.append(row['prediction'])
             # Use golden_answers column if available, otherwise fallback to answer
             if 'golden_answers' in row:
@@ -903,19 +683,7 @@ def run_inference(config: InferenceConfig,
             else:
                 golden_answers.append(row['answer'])
 
-        # Run batch judgment
-        # use the full 4o model bc it's for an eval set that isn't that big anyway
-        judgments = llm_judge_batch(questions,
-                                    ground_truths,
-                                    predictions,
-                                    judge_model="openai/gpt-4o")
-
-        # Add judgment results to DataFrame
-        for key in ['score', 'explanation', 'judgment']:
-            results_df[f'judge_{key}'] = [j.get(key, None) for j in judgments]
-
         # Compute exact match scores using golden_answers
-        print("Computing exact match scores...")
         em_scores = []
         for pred, gold in zip(predictions, golden_answers):
             clean_gold_list = {"target": list(gold)}
@@ -930,37 +698,73 @@ def run_inference(config: InferenceConfig,
         avg_em_score = np.mean(em_scores)
         print(f"Average Exact Match Score: {avg_em_score:.3f}")
 
-        # Save updated results
-        if output_path:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            results_df.to_csv(output_path, index=False)
-            print(
-                f"Updated results with LLM judge and EM scores saved to: {output_path}"
-            )
+    # Run LLM judge if requested
+    if run_judge and len(results_df) > 0:
+        print("Running LLM judge evaluation...")
 
-        # Print summary statistics
+        # Prepare data for batch processing (reuse from exact match computation above)
+        questions = []
+        ground_truths = []
+
+        for idx, row in results_df.iterrows():
+            questions.append(row['question'])
+            ground_truths.append(row['answer'])
+
+        # Run batch judgment
+        # use the full 4o model bc it's for an eval set that isn't that big anyway
+        judgments = llm_judge_batch(questions,
+                                    ground_truths,
+                                    predictions,
+                                    judge_model="openai/gpt-4o")
+
+        # Add judgment results to DataFrame
+        for key in ['score', 'explanation', 'judgment']:
+            results_df[f'judge_{key}'] = [j.get(key, None) for j in judgments]
+
+        # Print judge summary statistics
         if 'judge_score' in results_df.columns:
             avg_judge_score = results_df['judge_score'].mean()
             print(f"Average LLM Judge Score: {avg_judge_score:.3f}")
 
-        # Save summary statistics to txt file
-        if output_path:
-            summary_path = output_path.replace('.csv', '.txt')
-            with open(summary_path, 'w') as f:
-                f.write("PaperSearchRL Evaluation Summary\n")
-                f.write("=" * 40 + "\n\n")
-                f.write(f"Method: {config.method}\n")
-                f.write(f"Model: {config.model_id}\n")
-                f.write(f"Dataset: {config.dataset_id}\n")
-                f.write(f"Number of examples: {len(results_df)}\n\n")
-                f.write("Performance Metrics:\n")
-                f.write("-" * 20 + "\n")
-                f.write(f"Average Exact Match Score: {avg_em_score:.3f}\n")
-                if 'judge_score' in results_df.columns:
-                    f.write(
-                        f"Average LLM Judge Score: {avg_judge_score:.3f}\n")
+    # Always save updated results and summary (moved outside of run_judge check)
+    if output_path and len(results_df) > 0:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        results_df.to_csv(output_path, index=False)
+        print(f"Results saved to: {output_path}")
 
-            print(f"Summary statistics saved to: {summary_path}")
+        # Print summary statistics to terminal
+        print("\n" + "=" * 40)
+        print("PaperSearchRL Evaluation Summary")
+        print("=" * 40)
+        print(f"Method: {config.method}")
+        print(f"Model: {config.model_id}")
+        print(f"Dataset: {config.dataset_id}")
+        print(f"Number of examples: {len(results_df)}")
+        print("\nPerformance Metrics:")
+        print("-" * 20)
+        print(f"Average Exact Match Score: {avg_em_score:.3f}")
+        if 'judge_score' in results_df.columns:
+            avg_judge_score = results_df['judge_score'].mean()
+            print(f"Average LLM Judge Score: {avg_judge_score:.3f}")
+        print("=" * 40 + "\n")
+
+        # Save summary statistics to txt file
+        summary_path = output_path.replace('.csv', '.txt')
+        with open(summary_path, 'w') as f:
+            f.write("PaperSearchRL Evaluation Summary\n")
+            f.write("=" * 40 + "\n\n")
+            f.write(f"Method: {config.method}\n")
+            f.write(f"Model: {config.model_id}\n")
+            f.write(f"Dataset: {config.dataset_id}\n")
+            f.write(f"Number of examples: {len(results_df)}\n\n")
+            f.write("Performance Metrics:\n")
+            f.write("-" * 20 + "\n")
+            f.write(f"Average Exact Match Score: {avg_em_score:.3f}\n")
+            if 'judge_score' in results_df.columns:
+                avg_judge_score = results_df['judge_score'].mean()
+                f.write(f"Average LLM Judge Score: {avg_judge_score:.3f}\n")
+
+        print(f"Summary statistics saved to: {summary_path}")
 
     print("Evaluation complete!")
 
@@ -972,16 +776,17 @@ def main():
     parser = argparse.ArgumentParser(description="Run inference evaluation")
 
     # Main arguments
-    parser.add_argument(
-        "--method",
-        type=str,
-        required=True,
-        choices=["direct", "cot", "rag", "searchr1", "papersearchr1"],
-        help="Inference method to use")
-    parser.add_argument("--dataset_id",
+    parser.add_argument("--method",
                         type=str,
-                        default="jmhb/PaperSearchRL_v1_n10000_test500",
-                        help="HuggingFace dataset ID")
+                        required=True,
+                        choices=["direct", "cot", "rag"],
+                        help="Inference method to use")
+    parser.add_argument(
+        "--dataset_id",
+        type=str,
+        # default="jmhb/PaperSearchRL_v1_n10000_test500",
+        default="jmhb/PaperSearchRL_v4_gv2_n3000_test500",
+        help="HuggingFace dataset ID")
     parser.add_argument("--model_id",
                         type=str,
                         default="Qwen/Qwen2.5-3B-Instruct",
@@ -1026,16 +831,6 @@ def main():
                         type=str,
                         default="pubmed.jsonl",
                         help="Corpus filename for RAG method")
-    parser.add_argument("--searchr1_model_path",
-                        type=str,
-                        default="",
-                        help="Path to SearchR1 model")
-    parser.add_argument(
-        "--papersearchr1_model_path",
-        type=str,
-        default=
-        "./checkpoints/20250606_papersearchr1v1_qwenit_bm25/global_step_100/",
-        help="Path to PaperSearchR1 model")
 
     # VLLM-specific parameters
     parser.add_argument("--vllm_gpu_memory_utilization",
@@ -1075,8 +870,6 @@ def main():
         rag_top_k=args.rag_top_k,
         rag_retriever_type=args.retriever_type,
         rag_corpus_filename=args.corpus_filename,
-        searchr1_model_path=args.searchr1_model_path,
-        papersearchr1_model_path=args.papersearchr1_model_path,
         use_cache=not args.no_cache,
         overwrite_cache=args.overwrite_cache,
         vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,

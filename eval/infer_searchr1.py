@@ -1,4 +1,6 @@
 """
+python -m ipdb eval/infer_searchr1.py
+
 Batch inference utilities for SearchR1 / PaperSearchR1.
 
 This module provides a TRANSFORMERS-powered engine for batched inference on
@@ -48,31 +50,6 @@ def get_query(text: str) -> Optional[str]:
     pattern = re.compile(r"<search>(.*?)</search>", re.DOTALL)
     matches = pattern.findall(text)
     return matches[-1] if matches else None
-
-
-class StopOnSequence(transformers.StoppingCriteria):
-    """Stops generation when a sequence of tokens is generated."""
-
-    def __init__(self, target_sequences: List[str], tokenizer):
-        self.target_ids = [
-            tokenizer.encode(target, add_special_tokens=False)
-            for target in target_sequences
-        ]
-        self.target_lengths = [len(target_id) for target_id in self.target_ids]
-
-    def __call__(self, input_ids: torch.Tensor, scores, **kwargs) -> bool:
-        if input_ids.shape[1] < min(self.target_lengths):
-            return False
-
-        for i, target_id_seq in enumerate(self.target_ids):
-            target_len = self.target_lengths[i]
-            if torch.equal(
-                    input_ids[0, -target_len:],
-                    torch.tensor(target_id_seq,
-                                 device=input_ids.device,
-                                 dtype=torch.long)):
-                return True
-        return False
 
 
 def load_model_and_tokenizer(
@@ -132,15 +109,9 @@ class BatchSearchR1:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = 'left'
 
-        # Define robust stop sequences
-        stop_sequences = [
-            "</search>", " </search>", "</search>\n", " </search>\n>",
-            "</answer>", " </answer>", "</answer>\n", " </answer>\n"
-        ]
-        self.stopping_criteria = transformers.StoppingCriteriaList(
-            [StopOnSequence(stop_sequences, self.tokenizer)])
-
-        print("[BatchSearchR1] Initialised (Transformers-native backend).")
+        print(
+            "[BatchSearchR1] Initialised (Transformers-native backend with post-processing)."
+        )
 
     def _batch_search(self, queries: List[str]) -> List[str]:
         """Performs a batched search request to the retrieval server."""
@@ -178,6 +149,28 @@ class BatchSearchR1:
 
         return [_passages2string(res) for res in results]
 
+    def _postprocess_responses(
+            self, responses: torch.Tensor) -> Tuple[torch.Tensor, List[str]]:
+        """Process responses to stop at search operation or answer operation."""
+        responses_str = self.tokenizer.batch_decode(responses,
+                                                    skip_special_tokens=True)
+
+        # Truncate at stopping sequences (following training code pattern)
+        responses_str = [
+            resp.split('</search>')[0] + '</search>'
+            if '</search>' in resp else resp.split('</answer>')[0] +
+            '</answer>' if '</answer>' in resp else resp
+            for resp in responses_str
+        ]
+
+        # Re-tokenize the truncated responses
+        responses = self.tokenizer(responses_str,
+                                   add_special_tokens=False,
+                                   return_tensors='pt',
+                                   padding="longest")['input_ids']
+
+        return responses, responses_str
+
     def _build_initial_prompts(self, questions: List[str]) -> List[str]:
         """Constructs the initial system prompts for a batch of questions."""
         prompts = []
@@ -194,6 +187,7 @@ class BatchSearchR1:
                 "If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, "
                 "without detailed illustrations. For example, <answer> Beijing </answer>. "
                 f"Question: {q}\n")
+
             if self.tokenizer.chat_template:
                 prompt_str = self.tokenizer.apply_chat_template(
                     [{
@@ -232,41 +226,46 @@ class BatchSearchR1:
                                     truncation=True,
                                     max_length=4096).to(self.model.device)
 
-            # --- 2. Batched Generation ---
+            # --- 2. Batched Generation (simplified - no LogitsProcessor needed) ---
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=self.max_response_len,
                 temperature=self.temperature,
                 top_k=50,
                 do_sample=True,
-                stopping_criteria=self.stopping_criteria,
                 pad_token_id=self.tokenizer.eos_token_id)
 
-            # --- 3. Process outputs and collect search queries ---
-            # Decode the full generated sequence to correctly find tags
-            full_decoded_outputs = self.tokenizer.batch_decode(
-                outputs, skip_special_tokens=True)
+            # --- 3. Extract only the newly generated tokens ---
+            # Remove the input prompt tokens to get only the response
+            input_length = inputs['input_ids'].shape[1]
+            response_tokens = outputs[:, input_length:]
+
+            # --- 4. Post-process responses to handle stopping ---
+            processed_responses, responses_str = self._postprocess_responses(
+                response_tokens)
 
             search_queries_map = {}  # Map from active_idx_in_turn -> query
             finished_in_turn = []
 
-            for i, full_text in enumerate(full_decoded_outputs):
+            # ipdb.set_trace()
+            # pass
+
+            for i, response_text in enumerate(responses_str):
                 original_index = active_indices[i]
-                # The newly generated text is the part of the full output that
-                # comes after the original prompt.
-                prompt_len = len(prompts_for_turn[i])
-                generated_text = full_text[prompt_len:]
 
-                full_traces[original_index] += generated_text
+                # Add the response to the full trace
+                full_traces[original_index] += response_text
 
-                query = get_query(generated_text)
+                # Check for search queries
+                query = get_query(response_text)
                 if query:
                     search_queries_map[i] = query
 
-                if "</answer>" in generated_text:
+                # Check if this trace is finished (contains </answer>)
+                if "</answer>" in response_text:
                     finished_in_turn.append(original_index)
 
-            # --- 4. Batched Retrieval ---
+            # --- 5. Batched Retrieval ---
             if search_queries_map:
                 indices_that_searched = sorted(search_queries_map.keys())
                 queries_to_search = [
@@ -274,14 +273,14 @@ class BatchSearchR1:
                 ]
                 search_results = self._batch_search(queries_to_search)
 
-                # --- 5. Append search results to traces ---
+                # --- 6. Append search results to traces ---
                 for i, result_text in zip(indices_that_searched,
                                           search_results):
                     original_index = active_indices[i]
                     search_block = f"\n\n<information>{result_text}</information>\n\n"
                     full_traces[original_index] += search_block
 
-            # --- 6. Update active indices ---
+            # --- 7. Update active indices ---
             active_indices = [
                 i for i in active_indices if i not in finished_in_turn
             ]

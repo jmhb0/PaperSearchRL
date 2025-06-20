@@ -2,7 +2,6 @@
 python -m ipdb data_gen/filter_dataset.py 
 python -m ipdb data_gen/filter_dataset.py --dataset_name jmhb/PaperSearchRL_v4_gv2_n3000_test500_parav1pcnt50 --key 1
 python -m ipdb data_gen/filter_dataset.py --dataset_name jmhb/PaperSearchRL_v4_gv2_n3000_test500
-print(df.groupby(['rag_judge_score', 'direct_judge_score'])['rag_judge_score'].count() / len(df))
 """
 import os
 import sys
@@ -293,7 +292,6 @@ def run_and_load_inference(method,
     print(f"Judge scores: {np.mean(judge_scores)}")
     print(f"EM scores: {np.mean(em_scores_list)}")
 
-
     # Save results
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     results_df.to_csv(output_path, index=False)
@@ -428,7 +426,8 @@ def main():
         type=str,
         # default="jmhb/PaperSearchRL_v1_n10000_test500",
         # default="jmhb/PaperSearchRL_v4_gv2_n3000_test500",
-        default="jmhb/PaperSearchRL_v4_gv2_n3000_test500_parav1pcnt50",
+        # default="jmhb/PaperSearchRL_v5_gv3_n3000_test300",
+        default="jmhb/PaperSearchRL_v5_gv3_n3000_test300_parav1pcnt50",
         help="Name of the huggingface dataset")
     parser.add_argument("--key",
                         type=str,
