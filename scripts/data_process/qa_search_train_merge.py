@@ -54,7 +54,7 @@ if __name__ == '__main__':
 
     for data_source in data_sources:
 
-        dataset = datasets.load_dataset('RUC-NLPIR/FlashRAG_datasets', data_source)
+        dataset = datasets.load_dataset(data_source)
 
         train_dataset = dataset['train']
 
@@ -65,7 +65,8 @@ if __name__ == '__main__':
                 example['question'] = example['question'].strip()
                 if example['question'][-1] != '?':
                     example['question'] += '?'
-                question = make_prefix(example, template_type=args.template_type)
+                question = make_prefix(example,
+                                       template_type=args.template_type)
                 solution = {
                     "target": example['golden_answers'],
                 }
@@ -90,7 +91,8 @@ if __name__ == '__main__':
 
             return process_fn
 
-        train_dataset = train_dataset.map(function=make_map_fn('train'), with_indices=True)
+        train_dataset = train_dataset.map(function=make_map_fn('train'),
+                                          with_indices=True)
         all_dataset.append(train_dataset)
 
     local_dir = args.local_dir

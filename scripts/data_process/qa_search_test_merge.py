@@ -18,6 +18,7 @@ Preprocess the QA dataset to parquet format
 import re
 import os
 import datasets
+import ipdb
 
 from verl.utils.hdfs_io import copy, makedirs
 import argparse
@@ -53,10 +54,7 @@ if __name__ == '__main__':
 
     for data_source in data_sources:
 
-        if data_source != 'strategyqa':
-            dataset = datasets.load_dataset('RUC-NLPIR/FlashRAG_datasets', data_source)
-        else:
-            dataset = datasets.load_dataset('json', data_files="/home/peterjin/mnt/data/strategyqa/test_correct.jsonl")
+        dataset = datasets.load_dataset(data_source)
 
         if 'test' in dataset:
             print(f'Using the {data_source} test dataset...')
@@ -75,7 +73,8 @@ if __name__ == '__main__':
                 example['question'] = example['question'].strip()
                 if example['question'][-1] != '?':
                     example['question'] += '?'
-                question = make_prefix(example, template_type=args.template_type)
+                question = make_prefix(example,
+                                       template_type=args.template_type)
                 solution = {
                     "target": example['golden_answers'],
                 }
@@ -100,7 +99,8 @@ if __name__ == '__main__':
 
             return process_fn
 
-        test_dataset = test_dataset.map(function=make_map_fn('test'), with_indices=True)
+        test_dataset = test_dataset.map(function=make_map_fn('test'),
+                                        with_indices=True)
         all_dataset.append(test_dataset)
 
     local_dir = args.local_dir

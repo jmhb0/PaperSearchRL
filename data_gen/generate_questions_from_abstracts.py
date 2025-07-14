@@ -1307,8 +1307,8 @@ def generate_dataset_from_abstracts(key: int = 1,
 
 if __name__ == "__main__":
     # You can modify these parameters or add command line argument parsing
-    n_samples = 3000
-    n_test = 300
+    n_samples = 20000
+    n_test = 5000
     key = 5
     golden_key = 3
     do_paraphrase = True
