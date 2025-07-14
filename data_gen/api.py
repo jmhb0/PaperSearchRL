@@ -113,8 +113,8 @@ class LLMCache:
                 if _batch_counter:
                     _batch_counter.update_cache_hit()
                 else:
-                    print("✓", end="",
-                          flush=True)  # Original behavior for single calls
+                    # print("✓", end="", flush=True)
+                    pass
 
                 try:
                     # Try to parse as JSON (new format with cost)

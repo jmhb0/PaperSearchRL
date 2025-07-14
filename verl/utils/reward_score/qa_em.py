@@ -88,6 +88,7 @@ def compute_score_em(solution_str,
                      ground_truth,
                      method='strict',
                      format_score=0.,
+                     disable_print=False,
                      score=1.):
     """The scoring function for exact match (EM).
 
@@ -100,6 +101,8 @@ def compute_score_em(solution_str,
     """
     answer = extract_solution(solution_str=solution_str)
     do_print = random.randint(1, 64) == 1
+    if disable_print:
+        do_print = False
 
     if do_print:
         print(f"--------------------------------")

@@ -559,7 +559,7 @@ def _generate_output_path(config: InferenceConfig) -> str:
     """Generate standardized output path for all methods."""
     # Extract dataset name and replace "/" with "-"
     dataset_name = config.dataset_id.replace("/", "-")
-    output_dir = f"results/eval/{dataset_name}"
+    output_dir = f"results/eval/run_inference/{dataset_name}"
     os.makedirs(output_dir, exist_ok=True)
 
     # Extract clean model name for filename
@@ -611,7 +611,8 @@ def run_inference(config: InferenceConfig,
 
     # Load dataset
     try:
-        dataset = load_dataset(config.dataset_id, split="test")
+        split = "test" if "bioasq" not in config.dataset_id else "train"
+        dataset = load_dataset(config.dataset_id, split=split)
         df = dataset.to_pandas()
         print(f"Loaded {len(df)} examples from dataset")
 
@@ -739,6 +740,8 @@ def run_inference(config: InferenceConfig,
         print(f"Method: {config.method}")
         print(f"Model: {config.model_id}")
         print(f"Dataset: {config.dataset_id}")
+        if config.method == "rag":
+            print(f"Retriever Type: {config.rag_retriever_type}")
         print(f"Number of examples: {len(results_df)}")
         print("\nPerformance Metrics:")
         print("-" * 20)
@@ -756,6 +759,8 @@ def run_inference(config: InferenceConfig,
             f.write(f"Method: {config.method}\n")
             f.write(f"Model: {config.model_id}\n")
             f.write(f"Dataset: {config.dataset_id}\n")
+            if config.method == "rag":
+                f.write(f"Retriever Type: {config.rag_retriever_type}\n")
             f.write(f"Number of examples: {len(results_df)}\n\n")
             f.write("Performance Metrics:\n")
             f.write("-" * 20 + "\n")

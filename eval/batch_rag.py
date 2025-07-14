@@ -102,58 +102,56 @@ class BatchRAG:
                 "return_scores": True
             }
 
-            try:
-                response = requests.post("http://127.0.0.1:8000/retrieve",
-                                         json=payload,
-                                         timeout=timeout)
-                response.raise_for_status()
-                response_data = response.json()
+            response = requests.post("http://127.0.0.1:8000/retrieve",
+                                     json=payload,
+                                     timeout=timeout)
+            response.raise_for_status()
+            response_data = response.json()
 
-                # Validate retriever type if specified (only check on first batch)
-                if batch_idx == 0 and retriever_type is not None:
-                    actual_retriever_type = response_data.get('retriver_type')
-                    if actual_retriever_type != retriever_type:
-                        raise ValueError(
-                            f"Retriever type mismatch: requested '{retriever_type}' "
-                            f"but got '{actual_retriever_type}' from server")
+            # Validate retriever type if specified (only check on first batch)
+            if batch_idx == 0 and retriever_type is not None:
+                actual_retriever_type = response_data.get('retriver_type')
+                if actual_retriever_type != retriever_type:
+                    raise ValueError(
+                        f"Retriever type mismatch: requested '{retriever_type}' "
+                        f"but got '{actual_retriever_type}' from server")
 
-                # Validate corpus filename if specified (only check on first batch)
-                if batch_idx == 0 and corpus_filename is not None:
-                    actual_corpus_filename = response_data.get(
-                        'corpus_filename')
-                    if actual_corpus_filename != corpus_filename:
-                        raise ValueError(
-                            f"Corpus filename mismatch: requested '{corpus_filename}' "
-                            f"but got '{actual_corpus_filename}' from server")
+            # Validate corpus filename if specified (only check on first batch)
+            if batch_idx == 0 and corpus_filename is not None:
+                actual_corpus_filename = response_data.get('corpus_filename')
+                if actual_corpus_filename != corpus_filename:
+                    raise ValueError(
+                        f"Corpus filename mismatch: requested '{corpus_filename}' "
+                        f"but got '{actual_corpus_filename}' from server")
 
-                batch_results = response_data['result']
-                all_results.extend(batch_results)
+            batch_results = response_data['result']
+            all_results.extend(batch_results)
 
-            except (requests.exceptions.ConnectionError,
-                    requests.exceptions.Timeout) as e:
-                print(
-                    f"\n❌ ERROR: Cannot connect to retrieval server on localhost:8000"
-                )
-                print(f"Connection error: {e}")
-                print(f"Failed on batch {batch_num}/{total_batches}")
-                print(
-                    "Please start the retrieval server before running RAG method."
-                )
-                print("Example: python search_r1/search/retrieval_server.py")
-                sys.exit(1)
-            except requests.exceptions.RequestException as e:
-                print(f"\n❌ ERROR: HTTP request to retrieval server failed")
-                print(f"Request error: {e}")
-                print(f"Failed on batch {batch_num}/{total_batches}")
-                print(
-                    "Please check the retrieval server status and configuration."
-                )
-                sys.exit(1)
-            except Exception as e:
-                print(f"\n❌ ERROR: Unexpected error during batch retrieval")
-                print(f"Error: {e}")
-                print(f"Failed on batch {batch_num}/{total_batches}")
-                sys.exit(1)
+            # except (requests.exceptions.ConnectionError,
+            #         requests.exceptions.Timeout) as e:
+            #     print(
+            #         f"\n❌ ERROR: Cannot connect to retrieval server on localhost:8000"
+            #     )
+            #     print(f"Connection error: {e}")
+            #     print(f"Failed on batch {batch_num}/{total_batches}")
+            #     print(
+            #         "Please start the retrieval server before running RAG method."
+            #     )
+            #     print("Example: python search_r1/search/retrieval_server.py")
+            #     sys.exit(1)
+            # except requests.exceptions.RequestException as e:
+            #     print(f"\n❌ ERROR: HTTP request to retrieval server failed")
+            #     print(f"Request error: {e}")
+            #     print(f"Failed on batch {batch_num}/{total_batches}")
+            #     print(
+            #         "Please check the retrieval server status and configuration."
+            #     )
+            #     sys.exit(1)
+            # except Exception as e:
+            #     print(f"\n❌ ERROR: Unexpected error during batch retrieval")
+            #     print(f"Error: {e}")
+            #     print(f"Failed on batch {batch_num}/{total_batches}")
+            #     sys.exit(1)
 
         # Format retrieved documents
         retrieved_contexts = []

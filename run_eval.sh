@@ -1,17 +1,25 @@
+export CUDA_AVAILABLE_DEVICES=2,3
 
-## 3b models
-# python eval/run_inference.py --method direct --run_judge
-# python eval/run_inference.py --method cot  --run_judge
-# python eval/run_inference.py --method rag  --run_judge
+models=( "Qwen/Qwen2.5-3B-Instruct"
+    "Qwen/Qwen2.5-7B-Instruct"
+)
+dataset_ids=(
+    "jmhb/PaperSearchRL_v5_gv3_n3000_test300"
+    "jmhb/PaperSearchRL_v5_gv3_n3000_test300_parav1pcnt50"
+    "jmhb/PaperSearchRL_v5_gv3_n3000_test300_filterk1"
+    "jmhb/PaperSearchRL_v5_gv3_n3000_test300_parav1pcnt50_filterk1"
+    "jmhb/bioasq_trainv0_n1609_test100"
+)
+#methods=("direct" "cot" "rag")
+methods=("rag")
+retriever_type="e5" # or "bm25"
+for dataset_id in "${dataset_ids[@]}"; do
+    for method in "${methods[@]}"; do
+        for model in "${models[@]}"; do
+            python eval/run_inference.py --method $method --model_id $model --dataset_id $dataset_id --retriever_type $retriever_type
+        done
+    done
+done
 
-## 7b nmodels
-#python eval/run_inference.py --method direct  --model_id Qwen/Qwen2.5-7B-Instruct --run_judge
-#python eval/run_inference.py --method cot --model_id Qwen/Qwen2.5-7B-Instruct --run_judge
-#python eval/run_inference.py --method rag --model_id Qwen/Qwen2.5-7B-Instruct --run_judge 
 
 
-## searchr1 models
-python eval/run_inference.py --method papersearchr1  --output_path results/eval/papersearchr1-qwen3b.csv --run_judge
-exit
-python eval/run_inference.py --method searchr1 --model_id PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-3b-it-em-grpo --run_judge
-python eval/run_inference.py --method searchr1 --model_id PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-7b-em-ppo --model_id Qwen/Qwen2.5-3B-Instruct --run_judge

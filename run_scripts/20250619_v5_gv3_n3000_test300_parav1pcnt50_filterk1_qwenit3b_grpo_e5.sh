@@ -4,7 +4,7 @@ ln -s /home/jovyan/shared/jmhb/paper-search-rl/data/  data
 
 ## configs
 export TOTAL_GPUS=${TOTAL_GPUS:-8}  # Set total GPUs available 
-DATA_SOURCE=jmhb/PaperSearchRL_v5_gv3_n3000_test300_filterk1_parav1pcnt50
+DATA_SOURCE=jmhb/PaperSearchRL_v5_gv3_n3000_test300_parav1pcnt50_filterk1
 corpus_file=data/pubmed.jsonl
 TRAIN_STEPS=251
 SAVE_FREQ=25

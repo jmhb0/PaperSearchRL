@@ -426,8 +426,8 @@ def main():
         type=str,
         # default="jmhb/PaperSearchRL_v1_n10000_test500",
         # default="jmhb/PaperSearchRL_v4_gv2_n3000_test500",
-        # default="jmhb/PaperSearchRL_v5_gv3_n3000_test300",
-        default="jmhb/PaperSearchRL_v5_gv3_n3000_test300_parav1pcnt50",
+        default="jmhb/PaperSearchRL_v5_gv3_n3000_test300",
+        # default="jmhb/PaperSearchRL_v5_gv3_n3000_test300_parav1pcnt50",
         help="Name of the huggingface dataset")
     parser.add_argument("--key",
                         type=str,
