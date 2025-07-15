@@ -12,11 +12,12 @@ models=( "Qwen/Qwen2.5-3B-Instruct"
 # )
 dataset_ids=(
     "jmhb/bioasq_factoid"
-    "jmhb/PaperSearchRL_v5_gv3_n20000_test5000_parav1pcnt50")
+    "jmhb/papersearchr1"
 )
-methods=("direct" "cot" "rag")
-#methods=("rag")
+#methods=("direct" "cot" "rag")
+methods=("rag")
 retriever_type="bm25" #  ("e5" "bm25")
+#retriever_type="e5" #  ("e5" "bm25")
 for model in "${models[@]}"; do
     for dataset_id in "${dataset_ids[@]}"; do
         for method in "${methods[@]}"; do

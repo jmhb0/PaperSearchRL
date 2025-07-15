@@ -611,7 +611,7 @@ def run_inference(config: InferenceConfig,
 
     # Load dataset
     try:
-        split = "test" if "bioasq" not in config.dataset_id else "train"
+        split = "test"
         dataset = load_dataset(config.dataset_id, split=split)
         df = dataset.to_pandas()
         print(f"Loaded {len(df)} examples from dataset")
