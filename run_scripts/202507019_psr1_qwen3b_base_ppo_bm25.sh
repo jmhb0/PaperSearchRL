@@ -152,23 +152,23 @@ export VLLM_ATTENTION_BACKEND=XFORMERS # vllm + qwen2-7b with flash_attn has som
 if [ "$GPU_COUNT" -eq 1 ] || [ "$GPU_COUNT" -eq 2 ]; then
   BATCH_SIZE=256          
   VAL_BATCH_SIZE=128      
-  PPO_MINI_BATCH_SIZE=64 
-  PPO_MICRO_BATCH_SIZE=16
+  PPO_MINI_BATCH_SIZE=32
+  PPO_MICRO_BATCH_SIZE=8
 elif [ "$GPU_COUNT" -eq 4 ]; then
   BATCH_SIZE=512
   VAL_BATCH_SIZE=256
-  PPO_MINI_BATCH_SIZE=128
-  PPO_MICRO_BATCH_SIZE=32
+  PPO_MINI_BATCH_SIZE=64
+  PPO_MICRO_BATCH_SIZE=16
 elif [ "$GPU_COUNT" -eq 6 ]; then  # Separate case for 6 GPUs
   BATCH_SIZE=480  # 480 * 5 = 2400, which is divisible by 6 (2400/6 = 400)
   VAL_BATCH_SIZE=240
-  PPO_MINI_BATCH_SIZE=120
-  PPO_MICRO_BATCH_SIZE=30
+  PPO_MINI_BATCH_SIZE=60
+  PPO_MICRO_BATCH_SIZE=15
 elif [ "$GPU_COUNT" -eq 8 ]; then
   BATCH_SIZE=512
   VAL_BATCH_SIZE=256
-  PPO_MINI_BATCH_SIZE=128
-  PPO_MICRO_BATCH_SIZE=32
+  PPO_MINI_BATCH_SIZE=164
+  PPO_MICRO_BATCH_SIZE=16
 else
   echo "Warning: Unexpected GPU_COUNT=$GPU_COUNT, using default settings"
   BATCH_SIZE=512
@@ -177,6 +177,7 @@ else
   PPO_MICRO_BATCH_SIZE=32
 fi
 VAL_BATCH_SIZE=100
+
 
 echo "Training configuration for $GPU_COUNT GPUs:"
 echo "  BATCH_SIZE=$BATCH_SIZE"
@@ -251,6 +252,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     +critic.fsdp_config.param_offload=true \
     +critic.fsdp_config.grad_offload=true \
     +critic.fsdp_config.optimizer_offload=true \
+    +critic.model.enable_gradient_checkpointing=true \
     critic.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE \
     critic.ppo_micro_batch_size=$PPO_MICRO_BATCH_SIZE \
     trainer.critic_warmup=0 \
