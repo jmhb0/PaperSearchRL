@@ -9,8 +9,8 @@ ln -s /home/jovyan/shared/jmhb/paper-search-rl/data/  data
 export TOTAL_GPUS=${TOTAL_GPUS:-8}  # Set total GPUs available 
 corpus_file=data/pubmed.jsonl
 TRAIN_STEPS=201
-SAVE_FREQ=15
-TEST_FREQ=15
+SAVE_FREQ=20
+TEST_FREQ=20
 retriever_name=bm25
 
 export BASE_MODEL='Qwen/Qwen2.5-7B'
