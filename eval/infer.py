@@ -482,8 +482,18 @@ def save_results(results_df,
     # Create safe dataset name for folder
     safe_dataset_name = dataset_name.replace("/", "_")
 
+    # Create directory name based on checkpoint path if available, otherwise use model_id
+    if checkpoint_path:
+        # Remove "checkpoints", "actor", "global_" and replace "/" with "-"
+        dir_name = checkpoint_path.replace("checkpoints/", "").replace(
+            "actor/", "").replace("global_", "").replace("/", "-")
+        # Remove trailing slash if present
+        dir_name = dir_name.rstrip("/")
+    else:
+        dir_name = model_id.replace("/", "_")
+
     # Create dataset-specific directory
-    results_dir = Path("results/infer") / safe_dataset_name
+    results_dir = Path("results/infer") / safe_dataset_name / dir_name
     results_dir.mkdir(parents=True, exist_ok=True)
 
     # Calculate and print mean correctness score
@@ -677,6 +687,3 @@ if __name__ == "__main__":
         question = "Obstruction at which anatomical structure is commonly implicated in the development of unilateral hydrocephalus?"
         result = eval_one_question(question)
         print(result['generated_text'])
-
-    ipdb.set_trace()
-    pass

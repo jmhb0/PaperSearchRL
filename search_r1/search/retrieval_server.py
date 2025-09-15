@@ -17,6 +17,8 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+PORT = 8001
+
 # Configure logging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -531,4 +533,4 @@ if __name__ == "__main__":
 
     # 3) Launch the server. By default, it listens on http://127.0.0.1:8000
     logger.info("Starting FastAPI server on http://0.0.0.0:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

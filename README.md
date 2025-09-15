@@ -1,3 +1,7 @@
+# PaperSearchQA
+This repo is a fork of Search-R1. All sections in this Readme from below are from that repo. The authors of PaperSearchQA have removed identifying information about them, however the repo may have identifiying infromation about the Search-R1 authors. 
+
+
 # Search-R1: Train your LLMs to reason and call a search engine with reinforcement learning
 
 <div align="center">

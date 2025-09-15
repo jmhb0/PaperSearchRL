@@ -313,6 +313,7 @@ def test():
     from datasets import load_dataset
     from verl.utils.reward_score.qa_em import compute_score_em
     import time
+    import json
 
     parser = argparse.ArgumentParser(
         description="Quick batch SearchR1 evaluation")
@@ -391,6 +392,17 @@ def test():
         print("Pred:", predictions[i])
         print("GT:", gt_answers[i])
         print("Trace snippet:", full_traces[i][:250].replace("\n", " ") + "…")
+
+    with open(f'{args.checkpoint_path}_traces_n_{args.first_n}.json',
+              'w') as f:
+        json.dump(
+            {
+                'questions': questions,
+                'traces': full_traces,
+                'predictions': predictions
+            },
+            f,
+            indent=2)
 
 
 if __name__ == "__main__":
